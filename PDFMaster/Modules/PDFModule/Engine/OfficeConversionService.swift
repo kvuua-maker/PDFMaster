@@ -11,14 +11,20 @@ struct OfficeConversionService {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let data = try Data(contentsOf: url)
-        guard let token = Bundle.main.object(forInfoDictionaryKey: "UAAPIToken") as? String,
-              !token.isEmpty else { throw Failure.missingToken }
+        let token = (Bundle.main.object(forInfoDictionaryKey: "UAAPIToken") as? String) ?? ""
+        guard !token.isEmpty else {
+            Task { @MainActor in
+                RuntimeDiagnostics.shared.log("office", "missing UAAPIToken in Info.plist")
+            }
+            throw Failure.missingToken
+        }
 
         var request = URLRequest(url: URL(string: "https://178.105.32.46/v1/office/convert")!)
         request.httpMethod = "POST"
         request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(token, forHTTPHeaderField: "X-UA-Token")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "fileName": url.lastPathComponent,
             "base64": data.base64EncodedString()

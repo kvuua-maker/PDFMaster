@@ -37,9 +37,9 @@ private struct PDFToolsBindings: ViewModifier {
         content
             .overlay { if model.isBusy { ProgressView().padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)) } }
             .confirmationDialog("PDF з фото", isPresented: $model.showPhotoChoice, titleVisibility: .visible) {
-                Button(PDFL10n.t("Зробити фото")) { model.showCamera = true }
+                Button(PDFL10n.t("Зробити фото")) { openCamera { model.showCamera = true } }
                 Button(PDFL10n.t("Вибрати з галереї")) { model.showPhotoPicker = true }
-                Button(PDFL10n.t("Сканувати документ")) { model.showScanner = true }
+                Button(PDFL10n.t("Сканувати документ")) { openCamera { model.showScanner = true } }
                 Button(PDFL10n.t("Скасувати"), role: .cancel) {}
             }
             .photosPicker(isPresented: $model.showPhotoPicker, selection: $model.photoItems, maxSelectionCount: 20, matching: .images)
@@ -80,8 +80,10 @@ private struct PDFToolsBindings: ViewModifier {
                               pageIndex: model.viewerPage)
             }
             .fullScreenCover(isPresented: $model.showScanner) {
-                if CameraAccess.canScanDocuments {
-                    DocumentScannerView { pages in model.scanPages(pages) }
+                // VisionKit's scanner is the unstable part on recent iOS; the
+                // system camera is plain, supported and never crashes.
+                if CameraAccess.isCameraAvailable {
+                    CameraPhotoPicker { image in model.scanPages([image]) }
                 } else {
                     UnsupportedCameraView()
                 }
@@ -179,5 +181,13 @@ private struct PDFToolsAlerts: ViewModifier {
             } message: {
                 Text(model.alertMessage ?? "")
             }
+    }
+
+    private func openCamera(_ present: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            if await CameraAccess.request() {
+                present()
+            }
+        }
     }
 }

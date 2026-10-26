@@ -5,8 +5,9 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 configs:
-  Release: release
   Debug: debug
+  Release: release
+  Production: release
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -20,8 +21,9 @@ targets:
         excludes:
           - "**/*.md"
     configFiles:
-      Release: PDFMaster/Config/Production.xcconfig
       Debug: PDFMaster/Config/Production.xcconfig
+      Release: PDFMaster/Config/Production.xcconfig
+      Production: PDFMaster/Config/Production.xcconfig
     info:
       path: PDFMaster/Info.plist
     settings:

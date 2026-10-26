@@ -5,7 +5,7 @@ struct PDFMasterApp: App {
     var body: some Scene {
         WindowGroup {
             PDFHomeView()
-                .preferredColorScheme(.none)
+                .preferredColorScheme(.dark)
         }
     }
 }
