@@ -10,7 +10,7 @@ configs:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "9V5XXDXF3N"
 targets:
   PDFMaster:
     type: application
