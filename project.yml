@@ -2,7 +2,7 @@ name: PDFMaster
 options:
   bundleIdPrefix: com.kvuua
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
   createIntermediateGroups: true
 configs:
   Release: release
