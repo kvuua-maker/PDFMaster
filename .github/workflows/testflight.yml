@@ -30,8 +30,8 @@ jobs:
 
       - name: Install App Store Connect key
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID || secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY || secrets.ASC_KEY_P8 }}
         run: |
           set -euo pipefail
           KEY="$RUNNER_TEMP/private_keys/AuthKey_$ASC_KEY_ID.p8"
@@ -44,8 +44,8 @@ jobs:
 
       - name: Mint API token
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID || secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID || secrets.ASK_ISSUER_ID }}
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/jwt.js" <<'JS'
@@ -306,8 +306,8 @@ jobs:
 
       - name: Upload to TestFlight
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID || secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID || secrets.ASK_ISSUER_ID }}
         run: |
           set -euo pipefail
           IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -1)
