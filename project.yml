@@ -17,6 +17,8 @@ targets:
     platform: iOS
     sources:
       - path: PDFMaster
+        excludes:
+          - "**/*.md"
     configFiles:
       Release: PDFMaster/Config/Production.xcconfig
       Debug: PDFMaster/Config/Production.xcconfig
@@ -30,3 +32,4 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Manual
         ENABLE_USER_SCRIPT_SANDBOXING: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
