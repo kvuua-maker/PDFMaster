@@ -301,7 +301,13 @@ jobs:
 
           APP="$RUNNER_TEMP/PDFMaster.xcarchive/Products/Applications/PDFMaster.app"
           cp "$RUNNER_TEMP/app.mobileprovision" "$APP/embedded.mobileprovision"
-          codesign --force --sign "Apple Distribution" --timestamp=none --generate-entitlement-der "$APP"
+          # Sign with the entitlements embedded in the profile; an app signed
+          # without them is rejected by the upload service.
+          security cms -D -i "$RUNNER_TEMP/app.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
+          codesign --force --sign "Apple Distribution" --timestamp=none \
+            --entitlements "$RUNNER_TEMP/entitlements.plist" --generate-entitlement-der "$APP"
+          codesign -d --entitlements :- "$APP" | head -20
           codesign --verify --verbose "$APP"
           mkdir -p "$RUNNER_TEMP/export/payload/Payload"
           cp -R "$APP" "$RUNNER_TEMP/export/payload/Payload/"
