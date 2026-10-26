@@ -287,6 +287,19 @@ jobs:
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             MARKETING_VERSION=1.0.0 2>&1 | tee archive.log
 
+      - name: Verify the AI token reached the bundle
+        run: |
+          set -euo pipefail
+          PLIST="$RUNNER_TEMP/PDFMaster.xcarchive/Products/Applications/PDFMaster.app/Info.plist"
+          TOKEN=$(/usr/libexec/PlistBuddy -c "Print :UAAPIToken" "$PLIST" || true)
+          echo "token length: ${#TOKEN}"
+          case "$TOKEN" in
+            ""|\$*)
+              echo "::error::UAAPIToken is empty or unresolved in the built bundle"
+              exit 1
+              ;;
+          esac
+
       - name: Sign app and package IPA
         run: |
           set -euo pipefail
