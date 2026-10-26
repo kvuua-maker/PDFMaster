@@ -24,8 +24,6 @@ targets:
       Debug: PDFMaster/Config/Production.xcconfig
       Release: PDFMaster/Config/Production.xcconfig
       Production: PDFMaster/Config/Production.xcconfig
-    info:
-      path: PDFMaster/Info.plist
     settings:
       base:
         GENERATE_INFOPLIST_FILE: NO
