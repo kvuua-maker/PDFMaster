@@ -280,33 +280,34 @@ jobs:
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             MARKETING_VERSION=1.0.0 2>&1 | tee archive.log
 
-      - name: Export signed IPA
+      - name: Sign app and package IPA
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>method</key><string>app-store-connect</string>
-            <key>teamID</key><string>${TEAM_ID}</string>
-            <key>signingStyle</key><string>manual</string>
-            <key>signingCertificate</key><string>Apple Distribution</string>
-            <key>uploadSymbols</key><true/>
-            <key>destination</key><string>export</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${APP_BUNDLE}</key><string>${APP_PROFILE}</string>
-                          </dict>
-          </dict></plist>
-          PLIST
           security list-keychains -d user -s ua-sign.keychain login.keychain-db || true
           security unlock-keychain -p ua-ci-temp ua-sign.keychain || true
           security find-identity -v -p codesigning
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/PDFMaster.xcarchive" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" 2>&1 | tee export.log
-          ls -l "$RUNNER_TEMP/export"
+
+          # Fetch this app's App Store profile and embed it ourselves: exporting an
+          # archive built with CODE_SIGNING_ALLOWED=NO yields an unsigned IPA.
+          curl -s -o "$RUNNER_TEMP/profiles.json" -H "Authorization: Bearer $ASC_TOKEN" "$API/profiles?limit=200"
+          export PROFILE_NAME="$APP_PROFILE"
+          node -e '
+            const fs=require("fs");
+            const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/profiles.json","utf8"));
+            const p=(d.data||[]).find(x=>x.attributes.name===process.env.PROFILE_NAME);
+            if(!p){console.error("profile not found");process.exit(4)}
+            fs.writeFileSync(process.env.RUNNER_TEMP+"/app.mobileprovision", Buffer.from(p.attributes.profileContent,"base64"));
+          '
+
+          APP="$RUNNER_TEMP/PDFMaster.xcarchive/Products/Applications/PDFMaster.app"
+          cp "$RUNNER_TEMP/app.mobileprovision" "$APP/embedded.mobileprovision"
+          codesign --force --sign "Apple Distribution" --timestamp=none --generate-entitlement-der "$APP"
+          codesign --verify --verbose "$APP"
+          mkdir -p "$RUNNER_TEMP/export"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/export/PDFMaster.ipa"
+          IPA="$RUNNER_TEMP/export/PDFMaster.ipa"
+          ls -l "$IPA"
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
 
       - name: Upload to TestFlight
         env:
