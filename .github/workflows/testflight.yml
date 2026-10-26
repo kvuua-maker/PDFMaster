@@ -13,7 +13,7 @@ jobs:
     env:
       API: https://api.appstoreconnect.apple.com/v1
       TEAM_ID: 9V5XXDXF3N
-      APP_BUNDLE: io.pdfmaster.app
+      APP_BUNDLE: com.kvuua.pdfmaster
       APP_PROFILE: PDFMaster_AppStore
     steps:
       - uses: actions/checkout@v4
