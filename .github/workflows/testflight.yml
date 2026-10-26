@@ -290,6 +290,7 @@ jobs:
             <key>method</key><string>app-store-connect</string>
             <key>teamID</key><string>${TEAM_ID}</string>
             <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
             <key>uploadSymbols</key><true/>
             <key>destination</key><string>export</string>
             <key>provisioningProfiles</key>
@@ -298,6 +299,9 @@ jobs:
                           </dict>
           </dict></plist>
           PLIST
+          security list-keychains -d user -s ua-sign.keychain login.keychain-db || true
+          security unlock-keychain -p ua-ci-temp ua-sign.keychain || true
+          security find-identity -v -p codesigning
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/PDFMaster.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \
