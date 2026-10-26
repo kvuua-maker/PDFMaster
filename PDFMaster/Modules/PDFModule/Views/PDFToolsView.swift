@@ -28,13 +28,6 @@ struct PDFToolsView: View {
         }
     }
 
-    private func openCamera(_ present: @escaping @MainActor () -> Void) {
-        Task { @MainActor in
-            if await CameraAccess.request() {
-                present()
-            }
-        }
-    }
 }
 
 /// Pickers, sheets and alerts attached to the workspace.
@@ -45,9 +38,9 @@ private struct PDFToolsBindings: ViewModifier {
         content
             .overlay { if model.isBusy { ProgressView().padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)) } }
             .confirmationDialog("PDF з фото", isPresented: $model.showPhotoChoice, titleVisibility: .visible) {
-                Button(PDFL10n.t("Зробити фото")) { openCamera { model.showCamera = true } }
+                Button(PDFL10n.t("Зробити фото")) { openCameraWhenPermitted { model.showCamera = true } }
                 Button(PDFL10n.t("Вибрати з галереї")) { model.showPhotoPicker = true }
-                Button(PDFL10n.t("Сканувати документ")) { openCamera { model.showScanner = true } }
+                Button(PDFL10n.t("Сканувати документ")) { openCameraWhenPermitted { model.showScanner = true } }
                 Button(PDFL10n.t("Скасувати"), role: .cancel) {}
             }
             .photosPicker(isPresented: $model.showPhotoPicker, selection: $model.photoItems, maxSelectionCount: 20, matching: .images)
@@ -191,4 +184,15 @@ private struct PDFToolsAlerts: ViewModifier {
             }
     }
 
+}
+
+/// Ask for camera permission, then present. Shared by the workspace and its
+/// modifier so protection lives in one place.
+@MainActor
+func openCameraWhenPermitted(_ present: @escaping @MainActor () -> Void) {
+    Task { @MainActor in
+        if await CameraAccess.request() {
+            present()
+        }
+    }
 }
