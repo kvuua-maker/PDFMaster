@@ -1,0 +1,32 @@
+name: PDFMaster
+options:
+  bundleIdPrefix: com.kvuua
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+configs:
+  Release: release
+  Debug: debug
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: ""
+targets:
+  PDFMaster:
+    type: application
+    platform: iOS
+    sources:
+      - path: PDFMaster
+    configFiles:
+      Release: PDFMaster/Config/Production.xcconfig
+      Debug: PDFMaster/Config/Production.xcconfig
+    info:
+      path: PDFMaster/Info.plist
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: PDFMaster/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.kvuua.pdfmaster
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_USER_SCRIPT_SANDBOXING: YES

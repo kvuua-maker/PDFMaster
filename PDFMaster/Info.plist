@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>uk</string>
+	<key>CFBundleDisplayName</key>
+	<string>PDF Master</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleName</key>
+	<string>PDFMaster</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array><string>UIInterfaceOrientationPortrait</string></array>
+	<key>UIUserInterfaceStyle</key>
+	<string>Automatic</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Камера потрібна, щоб сканувати документи та створювати PDF.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Доступ до фото потрібен, щоб створювати PDF зі знімків.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Дозвольте зберігати створені PDF у Фото.</string>
+	<key>UAAPIToken</key>
+	<string>$(UA_API_TOKEN)</string>
+</dict>
+</plist>
