@@ -13,18 +13,17 @@ enum CameraAccess {
         isCameraAvailable && VNDocumentCameraSupport.isSupported
     }
 
-    @MainActor
-    static func request(completion: @escaping (Bool) -> Void) {
-        guard isCameraAvailable else { completion(false); return }
+    /// Async because AVCaptureDevice's callback cannot be forwarded across
+    /// actors without a data-race warning.
+    static func request() async -> Bool {
+        guard isCameraAvailable else { return false }
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            completion(true)
+            return true
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async { completion(granted) }
-            }
+            return await AVCaptureDevice.requestAccess(for: .video)
         default:
-            completion(false)
+            return false
         }
     }
 }
