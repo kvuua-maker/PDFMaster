@@ -44,7 +44,11 @@ private struct PDFToolsBindings: ViewModifier {
             }
             .photosPicker(isPresented: $model.showPhotoPicker, selection: $model.photoItems, maxSelectionCount: 20, matching: .images)
             .fullScreenCover(isPresented: $model.showCamera) {
-                CameraPhotoPicker { image in model.add(image: image) }
+                if CameraAccess.isCameraAvailable {
+                    CameraPhotoPicker { image in model.add(image: image) }
+                } else {
+                    UnsupportedCameraView()
+                }
             }
             .photosPicker(isPresented: $model.showLogoPicker, selection: $model.logoItem, matching: .images)
             .onChange(of: model.logoItem) { _, item in
@@ -76,7 +80,11 @@ private struct PDFToolsBindings: ViewModifier {
                               pageIndex: model.viewerPage)
             }
             .fullScreenCover(isPresented: $model.showScanner) {
-                DocumentScannerView { pages in model.scanPages(pages) }
+                if CameraAccess.canScanDocuments {
+                    DocumentScannerView { pages in model.scanPages(pages) }
+                } else {
+                    UnsupportedCameraView()
+                }
             }
             .onChange(of: model.photoItems) { _, items in
                 if !items.isEmpty { Task { await model.buildFromPhotos() } }
