@@ -27,6 +27,14 @@ struct PDFToolsView: View {
             .modifier(PDFToolsBindings(model: model))
         }
     }
+
+    private func openCamera(_ present: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            if await CameraAccess.request() {
+                present()
+            }
+        }
+    }
 }
 
 /// Pickers, sheets and alerts attached to the workspace.
@@ -183,11 +191,4 @@ private struct PDFToolsAlerts: ViewModifier {
             }
     }
 
-    private func openCamera(_ present: @escaping @MainActor () -> Void) {
-        Task { @MainActor in
-            if await CameraAccess.request() {
-                present()
-            }
-        }
-    }
 }
