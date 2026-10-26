@@ -303,9 +303,11 @@ jobs:
           cp "$RUNNER_TEMP/app.mobileprovision" "$APP/embedded.mobileprovision"
           codesign --force --sign "Apple Distribution" --timestamp=none --generate-entitlement-der "$APP"
           codesign --verify --verbose "$APP"
-          mkdir -p "$RUNNER_TEMP/export"
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/export/PDFMaster.ipa"
+          mkdir -p "$RUNNER_TEMP/export/payload/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/export/payload/Payload/"
           IPA="$RUNNER_TEMP/export/PDFMaster.ipa"
+          ( cd "$RUNNER_TEMP/export/payload" && ditto -c -k --sequesterRsrc --keepParent Payload "$IPA" )
+          unzip -l "$IPA" | head -5
           ls -l "$IPA"
           echo "IPA=$IPA" >> "$GITHUB_ENV"
 
