@@ -199,14 +199,22 @@ private struct PDFToolsAlerts: ViewModifier {
 /// Ask for camera permission, then present. Shared by the workspace and its
 /// modifier so protection lives in one place.
 @MainActor
+@MainActor private var cameraPresentationInFlight = false
+
 func openCameraWhenPermitted(_ present: @escaping @MainActor () -> Void) {
+    guard !cameraPresentationInFlight else {
+        RuntimeDiagnostics.shared.log("camera", "ignored duplicate request")
+        return
+    }
+    cameraPresentationInFlight = true
     Task { @MainActor in
+        defer { cameraPresentationInFlight = false }
         let available = CameraAccess.isCameraAvailable
-        RuntimeDiagnostics.shared.log("camera", "attempt available=\(available)")
+        RuntimeDiagnostics.shared.log("camera", "requested, available=\(available)")
         if await CameraAccess.request() {
             RuntimeDiagnostics.shared.log("camera", "presenting picker")
-            // Giving SwiftUI a runloop turn avoids presenting on top of the
-            // dismissal animation, which is a known crash source.
+            // One runloop turn avoids presenting on top of the dismissal
+            // animation, which is a known crash source.
             try? await Task.sleep(for: .milliseconds(350))
             present()
         } else {
