@@ -43,7 +43,12 @@ private struct PDFToolsBindings: ViewModifier {
                 Button(PDFL10n.t("Сканувати документ")) { openCameraWhenPermitted { model.showScanner = true } }
                 Button(PDFL10n.t("Скасувати"), role: .cancel) {}
             }
-            .photosPicker(isPresented: $model.showPhotoPicker, selection: $model.photoItems, maxSelectionCount: 20, matching: .images)
+            .fullScreenCover(isPresented: $model.showPhotoPicker) {
+                SystemPhotoPicker { images in
+                    RuntimeDiagnostics.shared.log("photos", "picked \(images.count) images")
+                    model.add(images: images)
+                }
+            }
             .fullScreenCover(isPresented: $model.showCamera) {
                 if CameraAccess.isCameraAvailable {
                     CameraPhotoPicker { image in model.add(image: image) }
@@ -191,8 +196,16 @@ private struct PDFToolsAlerts: ViewModifier {
 @MainActor
 func openCameraWhenPermitted(_ present: @escaping @MainActor () -> Void) {
     Task { @MainActor in
+        let available = CameraAccess.isCameraAvailable
+        RuntimeDiagnostics.shared.log("camera", "attempt available=\(available)")
         if await CameraAccess.request() {
+            RuntimeDiagnostics.shared.log("camera", "presenting picker")
+            // Giving SwiftUI a runloop turn avoids presenting on top of the
+            // dismissal animation, which is a known crash source.
+            try? await Task.sleep(for: .milliseconds(350))
             present()
+        } else {
+            RuntimeDiagnostics.shared.log("camera", "permission denied or unavailable")
         }
     }
 }

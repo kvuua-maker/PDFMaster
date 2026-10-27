@@ -306,6 +306,11 @@ extension PDFToolsModel {
         run { Optional(try await PDFToolsEngine.shared.merge(urls)) }
     }
 
+    func add(images: [UIImage]) {
+        guard !images.isEmpty else { return }
+        run { Optional(try await PDFToolsEngine.shared.makePDF(from: images)) }
+    }
+
     func add(image: UIImage) {
         run { Optional(try await PDFToolsEngine.shared.makePDF(from: [image])) }
     }
