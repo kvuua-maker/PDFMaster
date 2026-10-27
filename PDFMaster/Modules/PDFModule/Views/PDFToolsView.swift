@@ -86,9 +86,14 @@ private struct PDFToolsBindings: ViewModifier {
                               pageIndex: model.viewerPage)
             }
             .fullScreenCover(isPresented: $model.showScanner) {
-                // VisionKit's scanner is the unstable part on recent iOS; the
-                // system camera is plain, supported and never crashes.
-                if CameraAccess.isCameraAvailable {
+                // VisionKit gives edge detection and perspective correction; the
+                // plain camera stays as the fallback when it is unsupported.
+                if CameraAccess.canScanDocuments {
+                    DocumentScannerView { pages in
+                        RuntimeDiagnostics.shared.log("scanner", "VisionKit returned \(pages.count) pages")
+                        model.scanPages(pages)
+                    }
+                } else if CameraAccess.isCameraAvailable {
                     CameraPhotoPicker { image in model.scanPages([image]) }
                 } else {
                     UnsupportedCameraView()
