@@ -10,12 +10,19 @@ struct OfficeConvertView: View {
     @State private var result: URL?
     @State private var showImporter = false
     @State private var preview: PreviewTarget?
+    @State private var showPaywall = false
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     Button(PDFL10n.t("Вибрати Word або Excel")) { showImporter = true }
+                    Text(FreeTier.usageMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if !FreeTier.isPro {
+                        Button("Отримати повний доступ за \(ProStore.shared.priceLabel)") { showPaywall = true }
+                    }
                 }
                 if let result {
                     Section("Результат") {
@@ -41,15 +48,22 @@ struct OfficeConvertView: View {
                 Task { await convert(FileImport.copy(file)) }
             }
             .sheet(item: $preview) { item in PDFPreviewSheet(url: item.url) }
+            .sheet(isPresented: $showPaywall) { ProView() }
         }
     }
 
     private func convert(_ url: URL) async {
+        guard FreeTier.canConvert else {
+            status = FreeTier.limitMessage
+            showPaywall = true
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         do {
             result = try await OfficeConversionService.shared.convert(url)
-            status = "Готово"
+            FreeTier.registerConversion()
+            status = "Готово · \(FreeTier.usageMessage)"
         } catch {
             status = "Не вдалося: \(error)"
         }

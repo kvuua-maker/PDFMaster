@@ -5,6 +5,8 @@ import SwiftUI
 struct PDFHomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var showWorkspace = false
+    @State private var showPro = false
+    @State private var store = ProStore.shared
 
     struct ToolProxy: Identifiable {
         let id = UUID()
@@ -39,6 +41,7 @@ struct PDFHomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     header
+                    proBanner
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
                         ForEach(tools) { tool in
                             ToolCard(tool: tool,
@@ -56,6 +59,8 @@ struct PDFHomeView: View {
             .background(canvas.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .fullScreenCover(isPresented: $showWorkspace) { PDFToolsView() }
+            .sheet(isPresented: $showPro) { ProView() }
+            .task { await store.start() }
         }
         .tint(gold)
     }
@@ -76,6 +81,36 @@ struct PDFHomeView: View {
                 .padding(.top, 4)
         }
         .padding(.top, 8)
+    }
+
+    private var proBanner: some View {
+        Button { showPro = true } label: {
+            HStack(spacing: 10) {
+                Image(systemName: store.isPro ? "crown.fill" : "crown")
+                    .foregroundStyle(MidnightGold.gold)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.isPro ? "Pro активний" : "PDF Master Pro")
+                        .font(.system(size: 15, weight: .semibold, design: .serif))
+                        .foregroundStyle(.white)
+                    Text(store.isPro ? "Безліміт і без водяних знаків" : "Безлімітна конвертація · без водяних знаків")
+                        .font(.system(size: 12, design: .serif))
+                        .foregroundStyle(MidnightGold.secondaryText)
+                }
+                Spacer()
+                if !store.isPro {
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(MidnightGold.secondaryText)
+                }
+            }
+            .padding(16)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(MidnightGold.rim, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var footer: some View {
