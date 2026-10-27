@@ -3,7 +3,7 @@ import VisionKit
 
 /// System document scanner: detects page edges, corrects perspective and
 /// returns clean scans, which are then assembled into a PDF.
-struct DocumentScannerView: UIViewControllerRepresentable {
+struct DocumentScannerView: UIViewControllerRepresentable, @unchecked Sendable {
     let onFinish: ([UIImage]) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -27,19 +27,25 @@ struct DocumentScannerView: UIViewControllerRepresentable {
             for index in 0..<scan.pageCount {
                 pages.append(scan.imageOfPage(at: index))
             }
+            let view = parent
             MainActor.assumeIsolated {
-                parent.onFinish(pages)
-                parent.dismiss()
+                view.onFinish(pages)
+                view.dismiss()
             }
         }
 
         func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
-            MainActor.assumeIsolated { parent.dismiss() }
+            let view = parent
+            MainActor.assumeIsolated { view.dismiss() }
         }
 
         func documentCameraViewController(_ controller: VNDocumentCameraViewController,
                                           didFailWithError error: Error) {
-            parent.dismiss()
+            let view = parent
+            MainActor.assumeIsolated {
+                RuntimeDiagnostics.shared.log("scanner", "failed: \(error)")
+                view.dismiss()
+            }
         }
     }
 }
