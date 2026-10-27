@@ -4,6 +4,7 @@ import UIKit
 
 /// Camera availability and permission, checked before any picker is presented so
 /// the app shows a message instead of crashing.
+@MainActor
 enum CameraAccess {
     static var isCameraAvailable: Bool {
         UIImagePickerController.isSourceTypeAvailable(.camera)
@@ -29,6 +30,7 @@ enum CameraAccess {
 }
 
 /// Tiny shim so the VisionKit check stays testable and out of the view.
+@MainActor
 enum VNDocumentCameraSupport {
     static var isSupported: Bool {
         VNDocumentCameraViewController.isSupported

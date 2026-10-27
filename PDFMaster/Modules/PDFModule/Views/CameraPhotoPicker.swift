@@ -18,6 +18,7 @@ struct CameraPhotoPicker: UIViewControllerRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    @MainActor
     final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         let parent: CameraPhotoPicker
         init(_ parent: CameraPhotoPicker) { self.parent = parent }

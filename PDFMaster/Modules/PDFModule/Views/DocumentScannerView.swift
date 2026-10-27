@@ -17,6 +17,7 @@ struct DocumentScannerView: UIViewControllerRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    @MainActor
     final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
         let parent: DocumentScannerView
         init(_ parent: DocumentScannerView) { self.parent = parent }
