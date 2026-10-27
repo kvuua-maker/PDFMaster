@@ -293,6 +293,14 @@ jobs:
           PLIST="$RUNNER_TEMP/PDFMaster.xcarchive/Products/Applications/PDFMaster.app/Info.plist"
           TOKEN=$(/usr/libexec/PlistBuddy -c "Print :UAAPIToken" "$PLIST" || true)
           echo "token length: ${#TOKEN}"
+          for KEY in NSCameraUsageDescription NSPhotoLibraryUsageDescription; do
+            VALUE=$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$PLIST" || true)
+            if [ -z "$VALUE" ]; then
+              echo "::error::$KEY missing from the built bundle"
+              exit 1
+            fi
+            echo "$KEY: present"
+          done
           case "$TOKEN" in
             ""|\$*)
               echo "::error::UAAPIToken is empty or unresolved in the built bundle"
