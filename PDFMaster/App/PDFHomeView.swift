@@ -5,7 +5,6 @@ import SwiftUI
 struct PDFHomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var showWorkspace = false
-    @State private var showDiagnostics = false
 
     struct ToolProxy: Identifiable {
         let id = UUID()
@@ -56,17 +55,7 @@ struct PDFHomeView: View {
             }
             .background(canvas.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showDiagnostics = true } label: {
-                        Image(systemName: "stethoscope")
-                            .foregroundStyle(gold)
-                    }
-                    .accessibilityLabel("Діагностика")
-                }
-            }
             .fullScreenCover(isPresented: $showWorkspace) { PDFToolsView() }
-            .sheet(isPresented: $showDiagnostics) { PDFDiagnosticsView() }
         }
         .tint(gold)
     }

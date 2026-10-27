@@ -1,3 +1,4 @@
+#if DEBUG
 import SwiftUI
 import UIKit
 
@@ -30,3 +31,4 @@ struct PDFDiagnosticsView: View {
         }
     }
 }
+#endif
