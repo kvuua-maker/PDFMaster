@@ -5,15 +5,31 @@ import UniformTypeIdentifiers
 struct SaveToFilesButton: View {
     let url: URL
     @State private var isExporting = false
+    @State private var preparedURL: URL?
+
+    /// Free users export a watermarked copy; Pro exports the file untouched.
+    private var exportURL: URL { preparedURL ?? url }
 
     var body: some View {
-        Button(PDFL10n.t("Зберегти у Файли")) { isExporting = true }
+        Button(PDFL10n.t("Зберегти у Файли")) { prepareAndExport() }
             .fileExporter(
                 isPresented: $isExporting,
-                document: PDFFileDocument(url: url),
+                document: PDFFileDocument(url: exportURL),
                 contentType: contentType,
                 defaultFilename: url.deletingPathExtension().lastPathComponent
-            ) { _ in }
+            ) { _ in preparedURL = nil }
+    }
+
+    private func prepareAndExport() {
+        guard !FreeTier.isPro else {
+            preparedURL = nil
+            isExporting = true
+            return
+        }
+        Task {
+            preparedURL = try? await PDFToolsEngine.shared.watermark(url, text: "PDF Master")
+            isExporting = true
+        }
     }
 
     private var contentType: UTType {
