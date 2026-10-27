@@ -45,6 +45,7 @@ struct AnnotationPlacementView: View {
                         }
                 )
             }
+            .midnightScreen()
             .navigationTitle(kind.rawValue)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -47,6 +47,7 @@ struct PDFFileActionsView: View {
                     Section("Статус") { Text(status).font(.footnote) }
                 }
             }
+            .midnightScreen()
             .navigationTitle(PDFL10n.t("Інструменти для файлу"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button(PDFL10n.t("Готово")) { dismiss() } } }

@@ -52,6 +52,7 @@ struct AnnotationMoverView: View {
                 }
                 .frame(maxHeight: 160)
             }
+            .midnightScreen()
             .navigationTitle(PDFL10n.t("Переміщення анотацій"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

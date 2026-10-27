@@ -28,6 +28,7 @@ struct OfficeConvertView: View {
                     Section("Статус") { Text(status).font(.footnote) }
                 }
             }
+            .midnightScreen()
             .navigationTitle(PDFL10n.t("Office → PDF"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button(PDFL10n.t("Готово")) { dismiss() } } }

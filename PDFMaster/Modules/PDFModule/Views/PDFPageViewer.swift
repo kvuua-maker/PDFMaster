@@ -14,7 +14,8 @@ struct PDFPageViewer: View {
         NavigationStack {
             PDFKitView(url: url, pageIndex: pageIndex, password: password)
                 .ignoresSafeArea(edges: .bottom)
-                .navigationTitle("Сторінка \(pageIndex + 1)")
+                .midnightScreen()
+            .navigationTitle("Сторінка \(pageIndex + 1)")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
