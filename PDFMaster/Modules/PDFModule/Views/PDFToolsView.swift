@@ -199,7 +199,6 @@ private struct PDFToolsAlerts: ViewModifier {
 /// Ask for camera permission, then present. Shared by the workspace and its
 /// modifier so protection lives in one place.
 @MainActor
-@MainActor
 private enum CameraPresentation {
     static var inFlight = false
 }
