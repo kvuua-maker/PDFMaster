@@ -17,7 +17,6 @@ struct DocumentScannerView: UIViewControllerRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    @MainActor
     final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
         let parent: DocumentScannerView
         init(_ parent: DocumentScannerView) { self.parent = parent }
@@ -28,12 +27,14 @@ struct DocumentScannerView: UIViewControllerRepresentable {
             for index in 0..<scan.pageCount {
                 pages.append(scan.imageOfPage(at: index))
             }
-            parent.onFinish(pages)
-            parent.dismiss()
+            MainActor.assumeIsolated {
+                parent.onFinish(pages)
+                parent.dismiss()
+            }
         }
 
         func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
-            parent.dismiss()
+            MainActor.assumeIsolated { parent.dismiss() }
         }
 
         func documentCameraViewController(_ controller: VNDocumentCameraViewController,
