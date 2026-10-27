@@ -1,0 +1,52 @@
+name: App Store screenshots
+
+on:
+  workflow_dispatch:
+
+jobs:
+  capture:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app || sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | tail -1)"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: |
+          xcodegen generate
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 1" PDFMaster/Info.plist
+
+      - name: Run UI tests on iPhone 16 Pro Max
+        run: |
+          set -o pipefail
+          xcrun simctl list devicetypes | grep -i "iPhone 16 Pro Max" || true
+          xcodebuild test \
+            -project PDFMaster.xcodeproj \
+            -scheme PDFMaster \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro Max' \
+            -resultBundlePath "$RUNNER_TEMP/shots.xcresult" \
+            -only-testing:PDFMasterUITests/ScreenshotTests \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log
+
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p shots
+          xcrun xcresulttool export attachments \
+            --path "$RUNNER_TEMP/shots.xcresult" \
+            --output-path shots || true
+          ls -la shots || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: appstore-shots
+          path: shots
+          if-no-files-found: warn

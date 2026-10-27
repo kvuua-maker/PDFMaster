@@ -33,3 +33,16 @@ targets:
         CODE_SIGN_STYLE: Manual
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  PDFMasterUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: PDFMasterUITests
+    dependencies:
+      - target: PDFMaster
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kvuua.pdfmaster.uitests
+        TEST_TARGET_NAME: PDFMaster
+        CODE_SIGNING_ALLOWED: NO
