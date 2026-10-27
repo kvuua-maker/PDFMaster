@@ -1,4 +1,5 @@
 import PhotosUI
+import UniformTypeIdentifiers
 import SwiftUI
 
 /// PHPicker wrapper: the most stable, permission-light way to read photos.
@@ -35,10 +36,12 @@ struct SystemPhotoPicker: UIViewControllerRepresentable {
                 var images: [UIImage] = []
                 for result in results {
                     let provider = result.itemProvider
-                    if provider.canLoadObject(ofClass: UIImage.self),
-                       let image = try? await provider.loadObject(ofClass: UIImage.self) as? UIImage {
-                        images.append(image)
+                    let data: Data? = await withCheckedContinuation { continuation in
+                        provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                            continuation.resume(returning: data)
+                        }
                     }
+                    if let data, let image = UIImage(data: data) { images.append(image) }
                 }
                 parent.onPicked(images)
                 parent.dismiss()
