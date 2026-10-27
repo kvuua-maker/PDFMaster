@@ -199,16 +199,20 @@ private struct PDFToolsAlerts: ViewModifier {
 /// Ask for camera permission, then present. Shared by the workspace and its
 /// modifier so protection lives in one place.
 @MainActor
-@MainActor private var cameraPresentationInFlight = false
+@MainActor
+private enum CameraPresentation {
+    static var inFlight = false
+}
 
+@MainActor
 func openCameraWhenPermitted(_ present: @escaping @MainActor () -> Void) {
-    guard !cameraPresentationInFlight else {
+    guard !CameraPresentation.inFlight else {
         RuntimeDiagnostics.shared.log("camera", "ignored duplicate request")
         return
     }
-    cameraPresentationInFlight = true
+    CameraPresentation.inFlight = true
     Task { @MainActor in
-        defer { cameraPresentationInFlight = false }
+        defer { CameraPresentation.inFlight = false }
         let available = CameraAccess.isCameraAvailable
         RuntimeDiagnostics.shared.log("camera", "requested, available=\(available)")
         if await CameraAccess.request() {
