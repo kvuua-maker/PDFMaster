@@ -128,6 +128,9 @@ def compose(screenshot: Image.Image, caption: str, subtitle: str, size: tuple[in
     aspect = screenshot.height / screenshot.width
     shot_width = min(int(width * 0.84), int(available_height / aspect))
     shot = device_shot(screenshot, shot_width)
+    # Centre the phone in the space that is left, so a shorter crop does not
+    # leave a large empty band at the bottom.
+    shot_y += max(0, (available_height - shot.height) // 3)
     shot_x = (width - shot_width) // 2
 
     # shadow beneath the phone frame
