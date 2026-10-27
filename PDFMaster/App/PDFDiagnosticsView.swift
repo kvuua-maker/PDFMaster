@@ -24,6 +24,7 @@ struct PDFDiagnosticsView: View {
                     }
                 }
             }
+            .midnightScreen()
             .navigationTitle("Діагностика")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } } }
         }

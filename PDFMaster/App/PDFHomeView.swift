@@ -22,12 +22,12 @@ struct PDFHomeView: View {
         .init(title: "Підписати", subtitle: "Підпис і штампи", symbol: "signature")
     ]
 
-    private let gold = Color(red: 0.90, green: 0.75, blue: 0.30)
-    private let goldLight = Color(red: 0.96, green: 0.86, blue: 0.55)
+    private let gold = MidnightGold.gold
+    private let goldLight = MidnightGold.goldLight
 
     private var canvas: Color {
         colorScheme == .dark
-            ? Color(red: 0.04, green: 0.04, blue: 0.05)
+            ? MidnightGold.canvas
             : Color(red: 0.93, green: 0.92, blue: 0.90)
     }
 

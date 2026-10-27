@@ -17,6 +17,7 @@ struct PDFToolsView: View {
                 PDFEditSection(model: model)
                 PDFResultsSection(model: model)
             }
+            .midnightScreen()
             .navigationTitle(PDFL10n.t("PDF-інструменти"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

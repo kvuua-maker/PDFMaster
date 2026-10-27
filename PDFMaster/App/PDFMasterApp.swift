@@ -6,6 +6,7 @@ struct PDFMasterApp: App {
         WindowGroup {
             PDFHomeView()
                 .preferredColorScheme(.dark)
+                .tint(MidnightGold.gold)
         }
     }
 }

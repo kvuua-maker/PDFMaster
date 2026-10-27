@@ -16,6 +16,7 @@ struct PDFPreviewSheet: View {
         NavigationStack {
             QuickLookRepresentable(url: url)
                 .ignoresSafeArea(edges: .bottom)
+                .midnightScreen()
                 .navigationTitle(url.lastPathComponent)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
