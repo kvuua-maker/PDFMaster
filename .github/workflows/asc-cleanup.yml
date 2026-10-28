@@ -1,0 +1,67 @@
+name: ASC clean up extra screenshots
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clean:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Mint API token
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID || secrets.ASK_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY || secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$ASC_PRIVATE_KEY" | tr -d '\r' > "$RUNNER_TEMP/keys/AuthKey.p8"
+          node -e '
+            const fs=require("fs"),crypto=require("crypto");
+            const key=fs.readFileSync(process.env.RUNNER_TEMP+"/keys/AuthKey.p8","utf8");
+            const now=Math.floor(Date.now()/1000);
+            const b64=o=>Buffer.from(JSON.stringify(o)).toString("base64url");
+            const h={alg:"ES256",kid:process.env.ASC_KEY_ID,typ:"JWT"};
+            const p={iss:process.env.ASC_ISSUER_ID,iat:now,exp:now+900,aud:"appstoreconnect-v1"};
+            const data=b64(h)+"."+b64(p);
+            const sig=crypto.sign("sha256",Buffer.from(data),{key,dsaEncoding:"ieee-p1363"}).toString("base64url");
+            fs.writeFileSync(process.env.RUNNER_TEMP+"/token.txt",data+"."+sig);
+          '
+          echo "ASC_TOKEN=$(cat "$RUNNER_TEMP/token.txt")" >> "$GITHUB_ENV"
+
+      - name: Remove English screenshots from the Ukrainian localization
+        env:
+          ASC_TOKEN: ${{ env.ASC_TOKEN }}
+        run: |
+          set -uo pipefail
+          API=https://api.appstoreconnect.apple.com/v1
+          api() { curl -s -H "Authorization: Bearer $ASC_TOKEN" "$@"; }
+          APP_ID=6827264813
+          VER_ID=$(api "$API/apps/$APP_ID/appStoreVersions" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);const v=(d.data||[]).find(x=>x.attributes.platform==="IOS");process.stdout.write(v?v.id:"")})')
+          LOC=$(api "$API/appStoreVersions/$VER_ID/appStoreVersionLocalizations" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);const l=(d.data||[]).find(x=>x.attributes.locale==="uk");process.stdout.write(l?l.id:"")})')
+          echo "version=$VER_ID locale=$LOC"
+          SETS=$(api "$API/appStoreVersionLocalizations/$LOC/appScreenshotSets" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);process.stdout.write((d.data||[]).map(x=>x.id).join(" "))})')
+          echo "sets: $SETS"
+          for SET in $SETS; do
+            api "$API/appScreenshotSets/$SET/appScreenshots?fields%5BappScreenshots%5D=fileName" > shots.json
+            node -e '
+              const d=require("./shots.json");
+              (d.data||[]).forEach(s=>console.log(s.id+" "+s.attributes.fileName));
+            ' > list.txt
+            while read -r ID NAME; do
+              [ -n "${ID:-}" ] || continue
+              case "$NAME" in
+                *-en-*)
+                  CODE=$(api -o /dev/null -w '%{http_code}' -X DELETE "$API/appScreenshots/$ID")
+                  echo "delete $NAME -> $CODE"
+                  ;;
+                *) echo "keep $NAME" ;;
+              esac
+            done < list.txt
+          done
+          echo "--- final counts ---"
+          for SET in $SETS; do
+            COUNT=$(api "$API/appScreenshotSets/$SET/appScreenshots" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);process.stdout.write(String((d.data||[]).length))})')
+            echo "set $SET -> $COUNT screenshots"
+          done
