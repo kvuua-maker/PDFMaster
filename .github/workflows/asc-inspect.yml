@@ -1,0 +1,74 @@
+name: ASC inspect
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Mint API token
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID || secrets.ASK_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY || secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/keys"
+          KEY="$RUNNER_TEMP/keys/AuthKey.p8"
+          printf '%s' "$ASC_PRIVATE_KEY" | tr -d '\r' > "$KEY"
+          node -e '
+            const fs=require("fs"),crypto=require("crypto");
+            const key=fs.readFileSync(process.env.RUNNER_TEMP+"/keys/AuthKey.p8","utf8");
+            const now=Math.floor(Date.now()/1000);
+            const b64=o=>Buffer.from(JSON.stringify(o)).toString("base64url");
+            const header={alg:"ES256",kid:process.env.ASC_KEY_ID,typ:"JWT"};
+            const payload={iss:process.env.ASC_ISSUER_ID,iat:now,exp:now+900,aud:"appstoreconnect-v1"};
+            const data=b64(header)+"."+b64(payload);
+            const sig=crypto.sign("sha256",Buffer.from(data),{key,dsaEncoding:"ieee-p1363"}).toString("base64url");
+            fs.writeFileSync(process.env.RUNNER_TEMP+"/token.txt",data+"."+sig);
+          '
+          echo "ASC_TOKEN=$(cat "$RUNNER_TEMP/token.txt")" >> "$GITHUB_ENV"
+
+      - name: Find app and print screenshot slots
+        run: |
+          set -euo pipefail
+          API=https://api.appstoreconnect.apple.com/v1
+          api() { curl -s -H "Authorization: Bearer $ASC_TOKEN" "$1"; }
+
+          echo "=== apps ==="
+          api "$API/apps?filter%5BbundleId%5D=com.kvuua.pdfmaster&fields%5Bapps%5D=name,bundleId,primaryLocale" | tee apps.json
+          APP_ID=$(node -e 'const d=require("./apps.json");process.stdout.write(d.data?.[0]?.id||"")')
+          echo "APP_ID=$APP_ID"
+          [ -n "$APP_ID" ] || exit 1
+
+          echo "=== versions ==="
+          api "$API/apps/$APP_ID/appStoreVersions?fields%5BappStoreVersions%5D=versionString,platform,appStoreState&limit=5" | tee versions.json
+          node -e '
+            const d=require("./versions.json");
+            (d.data||[]).forEach(v=>console.log("version",v.id,v.attributes.versionString,v.attributes.appStoreState,v.attributes.platform));
+          '
+
+          VER_ID=$(node -e 'const d=require("./versions.json");const v=(d.data||[]).find(x=>x.attributes.platform==="IOS");process.stdout.write(v?v.id:"")')
+          echo "VER_ID=$VER_ID"
+          [ -n "$VER_ID" ] || exit 1
+
+          echo "=== localizations ==="
+          api "$API/appStoreVersions/$VER_ID/appStoreVersionLocalizations?fields%5BappStoreVersionLocalizations%5D=locale&limit=20" | tee locs.json
+          node -e '
+            const fs=require("fs"),d=require("./locs.json");
+            fs.writeFileSync("loc-ids.txt",(d.data||[]).map(l=>l.id+":"+l.attributes.locale).join("\n"));
+            (d.data||[]).forEach(l=>console.log("locale",l.id,l.attributes.locale));
+          '
+
+          while IFS=: read -r LOC_ID LOCALE; do
+            [ -n "$LOC_ID" ] || continue
+            echo "=== screenshot sets for $LOCALE ==="
+            api "$API/appStoreVersionLocalizations/$LOC_ID/appScreenshotSets" > sets.json
+            node -e '
+              const d=require("./sets.json");
+              if (d.errors) { console.log("  error:", JSON.stringify(d.errors[0]?.detail||d.errors)); }
+              (d.data||[]).forEach(s=>console.log("  set",s.id,s.attributes.screenshotDisplayType));
+            '
+          done < loc-ids.txt
