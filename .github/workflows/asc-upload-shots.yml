@@ -1,0 +1,103 @@
+name: ASC upload screenshots
+
+on:
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mint API token
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID || secrets.ASK_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY || secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$ASC_PRIVATE_KEY" | tr -d '\r' > "$RUNNER_TEMP/keys/AuthKey.p8"
+          node -e '
+            const fs=require("fs"),crypto=require("crypto");
+            const key=fs.readFileSync(process.env.RUNNER_TEMP+"/keys/AuthKey.p8","utf8");
+            const now=Math.floor(Date.now()/1000);
+            const b64=o=>Buffer.from(JSON.stringify(o)).toString("base64url");
+            const h={alg:"ES256",kid:process.env.ASC_KEY_ID,typ:"JWT"};
+            const p={iss:process.env.ASC_ISSUER_ID,iat:now,exp:now+1200,aud:"appstoreconnect-v1"};
+            const data=b64(h)+"."+b64(p);
+            const sig=crypto.sign("sha256",Buffer.from(data),{key,dsaEncoding:"ieee-p1363"}).toString("base64url");
+            fs.writeFileSync(process.env.RUNNER_TEMP+"/token.txt",data+"."+sig);
+          '
+          echo "ASC_TOKEN=$(cat "$RUNNER_TEMP/token.txt")" >> "$GITHUB_ENV"
+
+      - name: Upload screenshots
+        run: |
+          set -euo pipefail
+          API=https://api.appstoreconnect.apple.com/v1
+          api() { curl -s -H "Authorization: Bearer $ASC_TOKEN" "$@"; }
+
+          APP_ID=6827264813
+          VER_ID=$(api "$API/apps/$APP_ID/appStoreVersions?filter%5Bplatform%5D=IOS&fields%5BappStoreVersions%5D=versionString" \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);process.stdout.write(d.data?.[0]?.id||"")})')
+          echo "version id: $VER_ID"
+
+          LOC_ID=$(api "$API/appStoreVersions/$VER_ID/appStoreVersionLocalizations?fields%5BappStoreVersionLocalizations%5D=locale" \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);const l=(d.data||[]).find(x=>x.attributes.locale==="uk")||d.data?.[0];process.stdout.write(l?l.id:"")})')
+          echo "localization id: $LOC_ID"
+
+          upload_set() {
+            TYPE="$1"; DIR="$2"
+            echo "--- $TYPE"
+            BODY=$(printf '{"data":{"type":"appScreenshotSets","attributes":{"screenshotDisplayType":"%s"},"relationships":{"appStoreVersionLocalization":{"data":{"type":"appStoreVersionLocalizations","id":"%s"}}}}}' "$TYPE" "$LOC_ID")
+            CODE=$(api -o set.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$BODY" "$API/appScreenshotSets")
+            echo "create set -> HTTP $CODE"
+            if [ "$CODE" != "201" ]; then
+              node -e 'const d=require("./set.json");console.log("  ",(d.errors||[]).map(e=>e.title+": "+e.detail).join(" | "))'
+              return 0
+            fi
+            SET_ID=$(node -e 'const d=require("./set.json");process.stdout.write(d.data.id)')
+            for FILE in "$DIR"/*.png; do
+              NAME=$(basename "$FILE")
+              SIZE=$(wc -c < "$FILE" | tr -d ' ')
+              CREATE=$(printf '{"data":{"type":"appScreenshots","attributes":{"fileName":"%s","fileSize":%s},"relationships":{"appScreenshotSet":{"data":{"type":"appScreenshotSets","id":"%s"}}}}}' "$NAME" "$SIZE" "$SET_ID")
+              C2=$(api -o shot.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$CREATE" "$API/appScreenshots")
+              if [ "$C2" != "201" ]; then
+                echo "  $NAME create -> HTTP $C2"
+                node -e 'const d=require("./shot.json");console.log("   ",(d.errors||[]).map(e=>e.detail).join(" | "))'
+                continue
+              fi
+              node -e '
+                const fs=require("fs"),d=require("./shot.json");
+                const ops=d.data.attributes.uploadOperations||[];
+                fs.writeFileSync("ops.json",JSON.stringify({id:d.data.id,ops}));
+              '
+              node -e '
+                const fs=require("fs"),https=require("https");
+                const {id,ops}=require("./ops.json");
+                const file=process.argv[1];
+                const buf=fs.readFileSync(file);
+                const run=async()=>{
+                  for (const op of ops) {
+                    await new Promise((res,rej)=>{
+                      const req=https.request(op.url,{method:op.method,headers:Object.fromEntries(op.requestHeaders.map(h=>[h.name,h.value]))},r=>{r.resume();r.on("end",res)});
+                      req.on("error",rej);
+                      req.write(buf.subarray(op.offset,op.offset+op.length));
+                      req.end();
+                    });
+                  }
+                  const body=JSON.stringify({data:{type:"appScreenshots",id,attributes:{uploaded:true}}});
+                  await new Promise((res,rej)=>{
+                    const req=https.request(process.env.ASC_API+"/appScreenshots/"+id,{method:"PATCH",headers:{Authorization:"Bearer "+process.env.ASC_TOKEN,"Content-Type":"application/json"}},r=>{r.resume();r.on("end",res)});
+                    req.on("error",rej); req.end(body);
+                  });
+                };
+                run().then(()=>console.log("  uploaded",file)).catch(e=>{console.error("  fail",e.message);process.exit(1)});
+              ' "$FILE"
+            done
+          }
+          export ASC_API=$API
+          upload_set APP_IPHONE_67 docs/shots-67
+          upload_set APP_IPHONE_69 docs/shots-69
+          upload_set APP_IPHONE_61 docs/shots-61
