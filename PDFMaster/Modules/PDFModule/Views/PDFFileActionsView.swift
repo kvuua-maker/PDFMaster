@@ -16,6 +16,7 @@ struct PDFFileActionsView: View {
     @State private var moverItem: PreviewTarget?
     @State private var previewItem: PreviewTarget?
     @State private var alertMessage: String?
+    @State private var showPaywall = false
 
     var body: some View {
         NavigationStack {
@@ -63,6 +64,7 @@ struct PDFFileActionsView: View {
             }
             .sheet(item: $moverItem) { item in AnnotationMoverView(url: item.url) }
             .sheet(item: $previewItem) { item in PDFPreviewSheet(url: item.url) }
+            .sheet(isPresented: $showPaywall) { ProView() }
             .alert(PDFL10n.t("Помилка"), isPresented: Binding(
                 get: { alertMessage != nil },
                 set: { if !$0 { alertMessage = nil } }
@@ -77,6 +79,7 @@ struct PDFFileActionsView: View {
     /// Files picked from Files are security-scoped; copy them into the sandbox so
     /// every later read (extraction, rendering) works without the scope.
     private func extract() {
+        guard FreeTier.isPro else { showPaywall = true; return }
         guard let file else { return }
         isBusy = true
         Task {

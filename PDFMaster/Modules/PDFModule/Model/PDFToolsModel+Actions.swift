@@ -245,6 +245,7 @@ extension PDFToolsModel {
     }
 
     func exportPNG() {
+        guard FreeTier.isPro else { showPaywall = true; return }
         guard let url = results.first else { return }
         run { let pages = try await PDFToolsEngine.shared.images(from: url); return pages.first }
     }
@@ -339,6 +340,7 @@ extension PDFToolsModel {
     }
 
     func extractImages() {
+        guard FreeTier.isPro else { showPaywall = true; return }
         guard let url = results.first else { return }
         isBusy = true
         Task {
