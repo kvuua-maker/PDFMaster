@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add the version and purchase to the draft submission, then submit it."""
+"""Add the version (and the purchase, if Apple exposes it) to the draft and submit."""
 import json, os, urllib.request, urllib.error
 
 API = "https://api.appstoreconnect.apple.com"
@@ -24,25 +24,40 @@ def call(method, path, body=None):
         try:
             return e.code, json.loads(raw or b"{}")
         except Exception:
-            return e.code, {"raw": raw.decode(errors="ignore")[:500]}
+            return e.code, {"raw": raw.decode(errors="ignore")[:300]}
 
 
 def dump(label, code, d):
     print(f"{label} -> {code}")
-    if code in (200, 201):
-        print("   ok", json.dumps(d.get("data", {}).get("id", ""))[:120])
-        return
+    if code in (200, 201, 204):
+        return True
     for e in (d.get("errors") or [])[:4]:
         print("   ", e.get("code"), "|", e.get("detail"))
         for path, items in (e.get("meta") or {}).get("associatedErrors", {}).items():
             for a in items:
                 print("      ", path, "->", a.get("code"), "|", a.get("title"))
+    return False
 
 
 code, d = call("GET", f"/v1/apps/{APP}/appStoreVersions?filter%5Bplatform%5D=IOS")
 version = d["data"][0]
 VID = version["id"]
-print("version:", version["attributes"]["versionString"], version["attributes"]["appStoreState"], VID)
+print("version:", version["attributes"]["versionString"], version["attributes"]["appStoreState"])
+
+code, d = call("GET", f"/v1/appStoreVersions/{VID}/appStoreVersionLocalizations")
+LOC = d["data"][0]["id"]
+code, d = call("GET", f"/v1/appStoreVersionLocalizations/{LOC}/appScreenshotSets")
+for s in d.get("data", []):
+    kind = s["attributes"]["screenshotDisplayType"]
+    code, shots = call("GET", f"/v1/appScreenshotSets/{s['id']}/appScreenshots?fields%5BappScreenshots%5D=fileName,assetDeliveryState")
+    items = shots.get("data") or []
+    print(f"{kind}: {len(items)} shots")
+    for shot in items:
+        st = shot["attributes"].get("assetDeliveryState") or {}
+        print("   ", shot["attributes"]["fileName"], st.get("state"))
+    if not items:
+        code, _ = call("DELETE", f"/v1/appScreenshotSets/{s['id']}")
+        print("   empty set deleted ->", code)
 
 code, d = call("GET", f"/v1/apps/{APP}/inAppPurchasesV2?limit=10")
 IAP = next((i["id"] for i in d.get("data") or []
@@ -50,26 +65,31 @@ IAP = next((i["id"] for i in d.get("data") or []
 print("purchase:", IAP)
 
 code, d = call("GET", f"/v1/reviewSubmissions/{SUB}?include=items")
-print("submission state:", (d.get("data") or {}).get("attributes", {}).get("state"))
-existing = [i["type"] for i in (d.get("included") or [])]
-print("existing items:", existing)
+print("existing items:", [i["type"] for i in (d.get("included") or [])])
 
-if "appStoreVersions" not in existing:
-    code, d = call("POST", "/v1/reviewSubmissionItems", {"data": {
-        "type": "reviewSubmissionItems",
-        "relationships": {
-            "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": SUB}},
-            "appStoreVersion": {"data": {"type": "appStoreVersions", "id": VID}}}}})
-    dump("add version item", code, d)
+code, d = call("POST", "/v1/reviewSubmissionItems", {"data": {
+    "type": "reviewSubmissionItems",
+    "relationships": {
+        "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": SUB}},
+        "appStoreVersion": {"data": {"type": "appStoreVersions", "id": VID}}}}})
+dump("add version item", code, d)
 
-for rel in ["inAppPurchaseVersion", "inAppPurchase", "inAppPurchaseV2"]:
-    code, d = call("POST", "/v1/reviewSubmissionItems", {"data": {
-        "type": "reviewSubmissionItems",
-        "relationships": {
-            "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": SUB}},
-            rel: {"data": {"type": "inAppPurchases", "id": IAP}}}}})
-    dump(f"add purchase item as {rel}", code, d)
-    if code == 201:
+# the purchase link uses its own resource type
+for candidate in [
+    ("/v1/inAppPurchaseVersions?filter%5BinAppPurchase%5D=" + str(IAP), None),
+    (f"/v1/inAppPurchases/{IAP}/inAppPurchaseVersions", None),
+]:
+    path, _ = candidate
+    code, d = call("GET", path)
+    print("probe", path, "->", code, json.dumps(d)[:160])
+    ids = [x["id"] for x in (d.get("data") or [])]
+    if ids:
+        code, d = call("POST", "/v1/reviewSubmissionItems", {"data": {
+            "type": "reviewSubmissionItems",
+            "relationships": {
+                "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": SUB}},
+                "inAppPurchaseVersion": {"data": {"type": "inAppPurchaseVersions", "id": ids[0]}}}}})
+        dump("add purchase item", code, d)
         break
 
 code, d = call("GET", f"/v1/reviewSubmissions/{SUB}?include=items")
@@ -81,3 +101,5 @@ if SUBMIT:
     dump("SUBMIT", code, d)
     code, d = call("GET", f"/v1/reviewSubmissions/{SUB}")
     print("final state:", (d.get("data") or {}).get("attributes", {}).get("state"))
+    code, d = call("GET", f"/v1/appStoreVersions/{VID}")
+    print("version state:", (d.get("data") or {}).get("attributes", {}).get("appStoreState"))
