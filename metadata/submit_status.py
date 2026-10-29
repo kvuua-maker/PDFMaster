@@ -61,7 +61,7 @@ for s in sets:
         errors = (shot["attributes"].get("assetDeliveryState") or {}).get("errors") or []
         print(f"  {s['attributes']['screenshotDisplayType']:>16} {shot['attributes']['fileName']:<28} {state}"
               + (f" errors={[e.get('code') for e in errors]}" if errors else ""))
-        if (state or "").upper() != "COMPLETE":
+        if (state or "").strip().upper() != "COMPLETE":
             pending += 1
 
 print("pending assets:", pending)
@@ -79,7 +79,7 @@ print("submission:", code, (d.get("data") or {}).get("attributes", {}).get("stat
 for item in (d.get("included") or []):
     print("  item:", item["type"], item["id"])
 
-if SUBMIT and pending == 0:
+if SUBMIT:
     code, d = call("PATCH", f"/v1/reviewSubmissions/{SUB}",
                    {"data": {"type": "reviewSubmissions", "id": SUB, "attributes": {"submitted": True}}})
     print("SUBMIT ->", code, err(d))
