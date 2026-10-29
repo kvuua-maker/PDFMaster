@@ -61,7 +61,7 @@ for rel in ["inAppPurchaseV2", "inAppPurchase"]:
         rel: {"data": {"type": "inAppPurchases", "id": iap_id}}}}}
     code, d = call("POST", "/v1/inAppPurchaseSubmissions", body)
     print(f"POST inAppPurchaseSubmissions ({rel}) ->", code,
-          json.dumps(d, ensure_ascii=False)[:400] if code != 201 else "created")
+          json.dumps(d, ensure_ascii=False) if code != 201 else "created")
 
 # and check whether the version already exposes the purchase through the submission list
 code, d = call("GET", f"/v1/apps/6827264813/inAppPurchaseSubmissions?limit=10")
