@@ -53,6 +53,9 @@ for method, path in probes:
     code, d = call(method, path)
     print(f"{path} -> {code}", err(d) if code != 200 else json.dumps(d)[:200])
 
+# Ask Apple what fields the submission resource actually expects.
+code, d = call("POST", "/v1/inAppPurchaseSubmissions", {"data": {"type": "inAppPurchaseSubmissions", "attributes": {}}})
+print("schema probe ->", code, json.dumps(d, ensure_ascii=False)[:600])
 # Apple models IAP submission as its own resource; try the documented shape.
 body = {"data": {"type": "inAppPurchaseSubmissions", "relationships": {
     "inAppPurchase": {"data": {"type": "inAppPurchases", "id": iap_id}},
