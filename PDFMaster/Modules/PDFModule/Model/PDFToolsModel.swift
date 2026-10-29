@@ -29,6 +29,7 @@ final class PDFToolsModel {
     var showFileActions = false
     var showSignature = false
     var showSignatureHome = false
+    var showPaywall = false
     var showWatermark = false
     var showPassword = false
     var showText = false
@@ -117,6 +118,17 @@ final class PDFToolsModel {
     }
 
     func printPDF(_ url: URL) {
+        guard FreeTier.isPro else {
+            Task {
+                let watermarked = (try? await PDFToolsEngine.shared.watermark(url, text: "PDF Master")) ?? url
+                await MainActor.run { self.presentPrint(watermarked) }
+            }
+            return
+        }
+        presentPrint(url)
+    }
+
+    private func presentPrint(_ url: URL) {
         guard UIPrintInteractionController.isPrintingAvailable else {
             statusLine = "Друк недоступний на цьому пристрої"
             return

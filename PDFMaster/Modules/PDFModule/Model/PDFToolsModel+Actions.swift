@@ -3,6 +3,7 @@ import UIKit
 
 extension PDFToolsModel {
     func makeSearchable() {
+        guard FreeTier.isPro else { showPaywall = true; return }
         guard let url = results.first else { return }
         isBusy = true
         Task {
@@ -188,6 +189,7 @@ extension PDFToolsModel {
     }
 
     func removePassword() {
+        guard FreeTier.isPro else { showRemovePassword = false; showPaywall = true; return }
         guard let url = results.first, !passwordText.isEmpty else { showRemovePassword = false; return }
         showRemovePassword = false
         run { Optional(try await PDFToolsEngine.shared.removePassword(url, password: self.passwordText)) }
@@ -226,6 +228,7 @@ extension PDFToolsModel {
     }
 
     func runOCR() {
+        guard FreeTier.isPro else { showPaywall = true; return }
         guard let url = results.first else { return }
         isBusy = true
         Task {

@@ -1,7 +1,8 @@
 import Foundation
 
 /// Free-tier limits: three Word/Excel conversions per day and a watermark on
-/// exported files. Pro removes both.
+/// every export. The counter lives in the keychain so a reinstall does not reset
+/// it; the Pro flag comes from StoreKit.
 @MainActor
 enum FreeTier {
     static let dailyConversions = 3
@@ -18,8 +19,13 @@ enum FreeTier {
     }
 
     static var usedToday: Int {
-        guard UserDefaults.standard.string(forKey: dayKey) == today else { return 0 }
-        return UserDefaults.standard.integer(forKey: countKey)
+        guard KeychainStore.string(for: dayKey) == today else {
+            // migrate a value written by an earlier build, then forget it
+            migrateLegacyCountIfNeeded()
+            guard KeychainStore.string(for: dayKey) == today else { return 0 }
+            return Int(KeychainStore.string(for: countKey) ?? "0") ?? 0
+        }
+        return Int(KeychainStore.string(for: countKey) ?? "0") ?? 0
     }
 
     static var remaining: Int {
@@ -33,8 +39,18 @@ enum FreeTier {
     static func registerConversion() {
         guard !isPro else { return }
         let used = usedToday
-        UserDefaults.standard.set(today, forKey: dayKey)
-        UserDefaults.standard.set(used + 1, forKey: countKey)
+        KeychainStore.set(today, for: dayKey)
+        KeychainStore.set(String(used + 1), for: countKey)
+    }
+
+    private static func migrateLegacyCountIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: dayKey) == today else { return }
+        let legacy = defaults.integer(forKey: countKey)
+        KeychainStore.set(today, for: dayKey)
+        KeychainStore.set(String(legacy), for: countKey)
+        defaults.removeObject(forKey: countKey)
+        defaults.removeObject(forKey: dayKey)
     }
 
     static var limitMessage: String {

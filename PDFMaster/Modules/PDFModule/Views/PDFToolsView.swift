@@ -108,6 +108,7 @@ private struct PDFToolsBindings: ViewModifier {
             }
             .sheet(isPresented: $model.showOffice) { OfficeConvertView() }
             .sheet(isPresented: $model.showFileActions) { PDFFileActionsView() }
+            .sheet(isPresented: $model.showPaywall) { ProView() }
             .confirmationDialog("Підпис", isPresented: $model.showSignatureHome, titleVisibility: .visible) {
                 if model.savedSignature != nil {
                     Button(PDFL10n.t("Використати збережений підпис")) { model.useSavedSignature() }

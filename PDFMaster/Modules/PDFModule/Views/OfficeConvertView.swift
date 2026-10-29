@@ -28,7 +28,7 @@ struct OfficeConvertView: View {
                     Section("Результат") {
                         Text(result.lastPathComponent)
                         Button(PDFL10n.t("Перегляд")) { preview = PreviewTarget(url: result) }
-                        ShareLink(item: result) { Text(PDFL10n.t("Поділитися")) }
+                        ExportShareButton(url: result, title: PDFL10n.t("Поділитися"))
                     }
                 }
                 if let status {
