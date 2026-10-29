@@ -269,7 +269,7 @@ jobs:
           # The bundle version must increase with every upload; stamp it here so
           # the project's own default can never win.
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" PDFMaster/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.0" PDFMaster/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0" PDFMaster/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" PDFMaster/Info.plist
 
       - name: Archive (unsigned)
