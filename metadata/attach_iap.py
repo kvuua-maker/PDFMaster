@@ -52,3 +52,14 @@ probes = [
 for method, path in probes:
     code, d = call(method, path)
     print(f"{path} -> {code}", err(d) if code != 200 else json.dumps(d)[:200])
+
+# Apple models IAP submission as its own resource; try the documented shape.
+body = {"data": {"type": "inAppPurchaseSubmissions", "relationships": {
+    "inAppPurchase": {"data": {"type": "inAppPurchases", "id": iap_id}},
+    "appStoreVersion": {"data": {"type": "appStoreVersions", "id": ver_id}}}}}
+code, d = call("POST", "/v1/inAppPurchaseSubmissions", body)
+print("POST inAppPurchaseSubmissions ->", code, err(d) if code != 201 else json.dumps(d)[:300])
+
+# and check whether the version already exposes the purchase through the submission list
+code, d = call("GET", f"/v1/apps/6827264813/inAppPurchaseSubmissions?limit=10")
+print("GET inAppPurchaseSubmissions ->", code, err(d) if code != 200 else json.dumps(d)[:300])
