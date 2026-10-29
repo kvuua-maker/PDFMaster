@@ -56,12 +56,12 @@ for method, path in probes:
 # Ask Apple what fields the submission resource actually expects.
 code, d = call("POST", "/v1/inAppPurchaseSubmissions", {"data": {"type": "inAppPurchaseSubmissions", "attributes": {}}})
 print("schema probe ->", code, json.dumps(d, ensure_ascii=False)[:600])
-# Apple models IAP submission as its own resource; try the documented shape.
-body = {"data": {"type": "inAppPurchaseSubmissions", "relationships": {
-    "inAppPurchase": {"data": {"type": "inAppPurchases", "id": iap_id}},
-    "appStoreVersion": {"data": {"type": "appStoreVersions", "id": ver_id}}}}}
-code, d = call("POST", "/v1/inAppPurchaseSubmissions", body)
-print("POST inAppPurchaseSubmissions ->", code, err(d) if code != 201 else json.dumps(d)[:300])
+for rel in ["inAppPurchaseV2", "inAppPurchase"]:
+    body = {"data": {"type": "inAppPurchaseSubmissions", "relationships": {
+        rel: {"data": {"type": "inAppPurchases", "id": iap_id}}}}}
+    code, d = call("POST", "/v1/inAppPurchaseSubmissions", body)
+    print(f"POST inAppPurchaseSubmissions ({rel}) ->", code,
+          json.dumps(d, ensure_ascii=False)[:400] if code != 201 else "created")
 
 # and check whether the version already exposes the purchase through the submission list
 code, d = call("GET", f"/v1/apps/6827264813/inAppPurchaseSubmissions?limit=10")
