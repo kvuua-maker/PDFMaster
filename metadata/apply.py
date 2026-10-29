@@ -104,3 +104,12 @@ loc = [x for x in d["data"] if x["id"] == loc_id][0]["attributes"]
 print("verify description chars:", len(loc.get("description") or ""))
 print("verify keywords:", loc.get("keywords"))
 print("verify supportUrl:", loc.get("supportUrl"))
+print("verify promotionalText chars:", len(loc.get("promotionalText") or ""))
+
+code, d = call("GET", f"/appInfoLocalizations/{info_loc_id}")
+attrs = d.get("data", {}).get("attributes", {})
+print("verify subtitle:", attrs.get("subtitle"))
+print("verify privacyPolicyUrl:", attrs.get("privacyPolicyUrl"))
+
+code, d = call("GET", f"/appStoreVersions/{version_id}/relationships/build")
+print("verify attached build:", (d.get("data") or {}).get("id"))
