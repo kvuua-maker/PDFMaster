@@ -35,4 +35,4 @@ jobs:
       - name: Create the Pro purchase
         env:
           ASC_TOKEN: ${{ env.ASC_TOKEN }}
-        run: python3 metadata/create_iap.py
+        run: python3 metadata/verify_iap.py
