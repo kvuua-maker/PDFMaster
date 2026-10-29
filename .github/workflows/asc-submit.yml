@@ -37,4 +37,4 @@ jobs:
         env:
           ASC_TOKEN: ${{ env.ASC_TOKEN }}
           SUBMIT: ${{ inputs.submit }}
-        run: python3 metadata/submit_status.py
+        run: python3 metadata/refresh_shots.py
