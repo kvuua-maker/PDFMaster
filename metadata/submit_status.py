@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Report screenshot states and try to submit the draft review submission."""
-import json, os, sys, urllib.request, urllib.error
+"""Add the version and purchase to the draft submission, then submit it."""
+import json, os, urllib.request, urllib.error
 
 API = "https://api.appstoreconnect.apple.com"
 TOKEN = os.environ["ASC_TOKEN"]
 APP = "6827264813"
 SUB = os.environ.get("SUB_ID", "f9e768ca-199c-42ca-9c17-bd0febd69c43")
-SUBMIT = os.environ.get("SUBMIT", "0") == "1"
+SUBMIT = os.environ.get("SUBMIT", "1") == "1"
 
 
 def call(method, path, body=None):
@@ -24,64 +24,60 @@ def call(method, path, body=None):
         try:
             return e.code, json.loads(raw or b"{}")
         except Exception:
-            return e.code, {"raw": raw.decode(errors="ignore")[:300]}
+            return e.code, {"raw": raw.decode(errors="ignore")[:500]}
 
 
-def err(d):
-    out = []
-    for e in (d.get("errors") or [])[:3]:
-        out.append(f"{e.get('code')}: {e.get('detail')}")
+def dump(label, code, d):
+    print(f"{label} -> {code}")
+    if code in (200, 201):
+        print("   ok", json.dumps(d.get("data", {}).get("id", ""))[:120])
+        return
+    for e in (d.get("errors") or [])[:4]:
+        print("   ", e.get("code"), "|", e.get("detail"))
         for path, items in (e.get("meta") or {}).get("associatedErrors", {}).items():
             for a in items:
-                out.append(f"   {path} -> {a.get('code')}: {a.get('title')}")
-    return " | ".join(out) or json.dumps(d, ensure_ascii=False)[:300]
+                print("      ", path, "->", a.get("code"), "|", a.get("title"))
 
 
 code, d = call("GET", f"/v1/apps/{APP}/appStoreVersions?filter%5Bplatform%5D=IOS")
 version = d["data"][0]
 VID = version["id"]
-print("version:", VID, version["attributes"]["versionString"], version["attributes"]["appStoreState"])
+print("version:", version["attributes"]["versionString"], version["attributes"]["appStoreState"], VID)
 
-code, d = call("GET", f"/v1/apps/{APP}/builds?limit=10&sort=-version")
-print("builds:", [b["attributes"]["version"] for b in d.get("data", [])])
-code, d = call("GET", f"/v1/appStoreVersions/{VID}/relationships/build")
-print("attached build:", (d.get("data") or {}).get("id"))
-
-code, d = call("GET", f"/v1/appStoreVersions/{VID}/appStoreVersionLocalizations")
-LOC = d["data"][0]["id"]
-code, d = call("GET", f"/v1/appStoreVersionLocalizations/{LOC}/appScreenshotSets")
-sets = d.get("data", [])
-print("screenshot sets:", [(s["attributes"]["screenshotDisplayType"], s["id"]) for s in sets])
-
-pending = 0
-for s in sets:
-    code, d = call("GET", f"/v1/appScreenshotSets/{s['id']}/appScreenshots?fields%5BappScreenshots%5D=fileName,assetDeliveryState")
-    for shot in d.get("data", []):
-        state = (shot["attributes"].get("assetDeliveryState") or {}).get("state")
-        errors = (shot["attributes"].get("assetDeliveryState") or {}).get("errors") or []
-        print(f"  {s['attributes']['screenshotDisplayType']:>16} {shot['attributes']['fileName']:<28} {state}"
-              + (f" errors={[e.get('code') for e in errors]}" if errors else ""))
-        if (state or "").strip().upper() != "COMPLETE":
-            pending += 1
-
-print("pending assets:", pending)
-
-# An empty screenshot set still counts as "uploading" for Apple; drop it so the
-# version can be reviewed with the set the device actually uses.
-for s_set in sets:
-    code, d = call("GET", f"/v1/appScreenshotSets/{s_set['id']}/appScreenshots")
-    if not d.get("data"):
-        code, gone = call("DELETE", f"/v1/appScreenshotSets/{s_set['id']}")
-        print(f"delete empty set {s_set['attributes']['screenshotDisplayType']} -> {code}", err(gone) if code not in (204, 200) else "")
+code, d = call("GET", f"/v1/apps/{APP}/inAppPurchasesV2?limit=10")
+IAP = next((i["id"] for i in d.get("data") or []
+            if i["attributes"].get("productId") == "com.kvuua.pdfmaster.pro"), None)
+print("purchase:", IAP)
 
 code, d = call("GET", f"/v1/reviewSubmissions/{SUB}?include=items")
-print("submission:", code, (d.get("data") or {}).get("attributes", {}).get("state"))
-for item in (d.get("included") or []):
-    print("  item:", item["type"], item["id"])
+print("submission state:", (d.get("data") or {}).get("attributes", {}).get("state"))
+existing = [i["type"] for i in (d.get("included") or [])]
+print("existing items:", existing)
+
+if "appStoreVersions" not in existing:
+    code, d = call("POST", "/v1/reviewSubmissionItems", {"data": {
+        "type": "reviewSubmissionItems",
+        "relationships": {
+            "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": SUB}},
+            "appStoreVersion": {"data": {"type": "appStoreVersions", "id": VID}}}}})
+    dump("add version item", code, d)
+
+for rel in ["inAppPurchaseVersion", "inAppPurchase", "inAppPurchaseV2"]:
+    code, d = call("POST", "/v1/reviewSubmissionItems", {"data": {
+        "type": "reviewSubmissionItems",
+        "relationships": {
+            "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": SUB}},
+            rel: {"data": {"type": "inAppPurchases", "id": IAP}}}}})
+    dump(f"add purchase item as {rel}", code, d)
+    if code == 201:
+        break
+
+code, d = call("GET", f"/v1/reviewSubmissions/{SUB}?include=items")
+print("items now:", [i["type"] for i in (d.get("included") or [])])
 
 if SUBMIT:
     code, d = call("PATCH", f"/v1/reviewSubmissions/{SUB}",
                    {"data": {"type": "reviewSubmissions", "id": SUB, "attributes": {"submitted": True}}})
-    print("SUBMIT ->", code, err(d))
+    dump("SUBMIT", code, d)
     code, d = call("GET", f"/v1/reviewSubmissions/{SUB}")
-    print("state after:", (d.get("data") or {}).get("attributes", {}).get("state"))
+    print("final state:", (d.get("data") or {}).get("attributes", {}).get("state"))
