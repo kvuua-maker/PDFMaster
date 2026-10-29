@@ -55,9 +55,14 @@ for s in d.get("data", []):
     for shot in items:
         st = shot["attributes"].get("assetDeliveryState") or {}
         print("   ", shot["attributes"]["fileName"], st.get("state"))
-    if not items:
+    stale = [sh for sh in items
+             if (sh["attributes"].get("assetDeliveryState") or {}).get("state") in ("AWAITING_UPLOAD", "FAILED")]
+    if not items or stale:
+        for sh in stale:
+            code, _ = call("DELETE", f"/v1/appScreenshots/{sh['id']}")
+            print("   delete stale shot", sh["attributes"]["fileName"], "->", code)
         code, _ = call("DELETE", f"/v1/appScreenshotSets/{s['id']}")
-        print("   empty set deleted ->", code)
+        print("   delete set", kind, "->", code)
 
 code, d = call("GET", f"/v1/apps/{APP}/inAppPurchasesV2?limit=10")
 IAP = next((i["id"] for i in d.get("data") or []
