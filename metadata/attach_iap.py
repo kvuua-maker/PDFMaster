@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Discover and create the link between app version 1.0 and the Pro purchase."""
+"""Attach the Pro purchase to the version through a draft review submission.
+
+Apple's rule: the first non-consumable must be reviewed together with the app
+version, so the only supported link is a review submission that contains both
+items. This script builds that draft and leaves it unsubmitted.
+"""
 import json, os, urllib.request, urllib.error
 
 API = "https://api.appstoreconnect.apple.com"
@@ -7,9 +12,8 @@ TOKEN = os.environ["ASC_TOKEN"]
 
 
 def call(method, path, body=None):
-    url = API + path
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
+    req = urllib.request.Request(API + path, data=data, method=method)
     req.add_header("Authorization", "Bearer " + TOKEN)
     if data:
         req.add_header("Content-Type", "application/json")
@@ -26,43 +30,64 @@ def call(method, path, body=None):
 
 
 def err(d):
-    return " | ".join(f"{e.get('title')}: {e.get('detail')}" for e in (d.get("errors") or [])[:2])
+    out = []
+    for e in (d.get("errors") or [])[:3]:
+        out.append(f"{e.get('code')}: {e.get('detail')}")
+        for path, items in (e.get("meta") or {}).get("associatedErrors", {}).items():
+            for a in items:
+                out.append(f"   {path} -> {a.get('code')}: {a.get('title')}")
+    return " | ".join(out)
 
 
-code, d = call("GET", "/v1/apps/6827264813/appStoreVersions?filter%5Bplatform%5D=IOS")
-ver_id = d["data"][0]["id"]
-print("version:", ver_id, d["data"][0]["attributes"]["versionString"])
+APP = "6827264813"
+code, d = call("GET", f"/v1/apps/{APP}/appStoreVersions?filter%5Bplatform%5D=IOS")
+VER = d["data"][0]["id"]
+print("version:", VER, d["data"][0]["attributes"]["versionString"])
 
-code, d = call("GET", "/v1/apps/6827264813/inAppPurchasesV2?limit=10")
-iap_id = None
+code, d = call("GET", f"/v1/apps/{APP}/inAppPurchasesV2?limit=10")
+IAP = None
 for item in d.get("data") or []:
     if item["attributes"].get("productId") == "com.kvuua.pdfmaster.pro":
-        iap_id = item["id"]
-        print("purchase:", iap_id, item["attributes"].get("state"))
-if not iap_id:
-    raise SystemExit("purchase not found")
+        IAP = item["id"]
+print("purchase:", IAP)
+if not IAP:
+    raise SystemExit("purchase missing")
 
-probes = [
-    ("GET", f"/v1/appStoreVersions/{ver_id}/inAppPurchases"),
-    ("GET", f"/v1/appStoreVersions/{ver_id}/relationships/inAppPurchases"),
-    ("GET", f"/v1/inAppPurchases/{iap_id}/appStoreVersion"),
-    ("GET", f"/v1/appStoreVersions/{ver_id}/appStoreVersionInAppPurchases"),
-    ("GET", f"/v1/inAppPurchases/{iap_id}/inAppPurchaseVersions"),
-]
-for method, path in probes:
-    code, d = call(method, path)
-    print(f"{path} -> {code}", err(d) if code != 200 else json.dumps(d)[:200])
+# 1. existing draft submission?
+code, d = call("GET", f"/v1/apps/{APP}/reviewSubmissions?filter%5Bplatform%5D=IOS&limit=10")
+sub_id = None
+for s in d.get("data") or []:
+    print("  existing submission:", s["id"], s["attributes"].get("state"))
+    if s["attributes"].get("state") in ("READY_FOR_REVIEW", "UNRESOLVED_ISSUES", "COMPLETE"):
+        sub_id = s["id"]
 
-# Ask Apple what fields the submission resource actually expects.
-code, d = call("POST", "/v1/inAppPurchaseSubmissions", {"data": {"type": "inAppPurchaseSubmissions", "attributes": {}}})
-print("schema probe ->", code, json.dumps(d, ensure_ascii=False)[:600])
-for rel in ["inAppPurchaseV2", "inAppPurchase"]:
-    body = {"data": {"type": "inAppPurchaseSubmissions", "relationships": {
-        rel: {"data": {"type": "inAppPurchases", "id": iap_id}}}}}
-    code, d = call("POST", "/v1/inAppPurchaseSubmissions", body)
-    print(f"POST inAppPurchaseSubmissions ({rel}) ->", code,
-          json.dumps(d, ensure_ascii=False) if code != 201 else "created")
+if not sub_id:
+    code, d = call("POST", "/v1/reviewSubmissions", {"data": {
+        "type": "reviewSubmissions", "attributes": {"platform": "IOS"},
+        "relationships": {"app": {"data": {"type": "apps", "id": APP}}}}})
+    print("create submission ->", code, err(d) if code != 201 else "ok")
+    sub_id = (d.get("data") or {}).get("id")
 
-# and check whether the version already exposes the purchase through the submission list
-code, d = call("GET", f"/v1/apps/6827264813/inAppPurchaseSubmissions?limit=10")
-print("GET inAppPurchaseSubmissions ->", code, err(d) if code != 200 else json.dumps(d)[:300])
+print("submission id:", sub_id)
+if not sub_id:
+    raise SystemExit(1)
+
+# 2. add the version and the purchase as items
+for label, rel, typ, ident in [
+    ("version", "appStoreVersion", "appStoreVersions", VER),
+    ("purchase", "inAppPurchaseV2", "inAppPurchases", IAP),
+]:
+    code, d = call("POST", "/v1/reviewSubmissionItems", {"data": {
+        "type": "reviewSubmissionItems",
+        "relationships": {
+            "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": sub_id}},
+            rel: {"data": {"type": typ, "id": ident}}}}})
+    print(f"add {label} ->", code, err(d) if code != 201 else "ok")
+
+# 3. read back
+code, d = call("GET", f"/v1/reviewSubmissions/{sub_id}/items?include=appStoreVersion,inAppPurchaseV2")
+print("items ->", code)
+for item in (d.get("data") or []):
+    print("  item", item["id"], json.dumps(item.get("relationships", {}), ensure_ascii=False)[:200])
+code, d = call("GET", f"/v1/reviewSubmissions/{sub_id}")
+print("submission state:", (d.get("data") or {}).get("attributes", {}).get("state"))
