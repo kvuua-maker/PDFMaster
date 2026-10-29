@@ -61,10 +61,18 @@ for s in sets:
         errors = (shot["attributes"].get("assetDeliveryState") or {}).get("errors") or []
         print(f"  {s['attributes']['screenshotDisplayType']:>16} {shot['attributes']['fileName']:<28} {state}"
               + (f" errors={[e.get('code') for e in errors]}" if errors else ""))
-        if state != "COMPLETE":
+        if (state or "").upper() != "COMPLETE":
             pending += 1
 
 print("pending assets:", pending)
+
+# An empty screenshot set still counts as "uploading" for Apple; drop it so the
+# version can be reviewed with the set the device actually uses.
+for s_set in sets:
+    code, d = call("GET", f"/v1/appScreenshotSets/{s_set['id']}/appScreenshots")
+    if not d.get("data"):
+        code, gone = call("DELETE", f"/v1/appScreenshotSets/{s_set['id']}")
+        print(f"delete empty set {s_set['attributes']['screenshotDisplayType']} -> {code}", err(gone) if code not in (204, 200) else "")
 
 code, d = call("GET", f"/v1/reviewSubmissions/{SUB}?include=items")
 print("submission:", code, (d.get("data") or {}).get("attributes", {}).get("state"))
