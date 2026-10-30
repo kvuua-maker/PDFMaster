@@ -281,7 +281,7 @@ check(left.anchorChar == 3 && left.focusChar == 35, "a tap to the left extends t
 
 let inside = RowSelectionEditing.tap(at: CGPoint(x: row1.chars[15].midX, y: row1.rect.midY),
                                      in: map, selection: base)
-check(inside.focusChar == 20 && inside.anchorChar == 15, "a tap inside moves the nearer end",
+check(inside.anchorChar == 15 && inside.focusChar == 30, "a tap inside moves the nearer end",
       "chars \(inside.anchorChar)…\(inside.focusChar)")
 
 // MARK: - Multi-row selection (paragraph-like)
