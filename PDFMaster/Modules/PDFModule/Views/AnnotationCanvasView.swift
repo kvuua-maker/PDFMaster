@@ -307,7 +307,9 @@ final class AnnotationCanvasView: UIView {
             self.rectAnchor = nil
             rectSelection = makeRectSelection(from: rectAnchor, to: point)
             renderThrottled(force: true)
+            showHandles()
             showActionBar()
+            logFallbackReason()
         case .cancelled, .failed:
             rectAnchor = nil
             rectSelection = nil
@@ -470,7 +472,11 @@ final class AnnotationCanvasView: UIView {
     private enum HandleRole { case start, end }
 
     private func handleHandleDrag(_ gesture: UIPanGestureRecognizer, role: HandleRole) {
-        guard usesLineSnapping, let textMap, let base = lineSelection else { return }
+        guard usesLineSnapping else {
+            dragRectHandle(gesture, role: role)
+            return
+        }
+        guard let textMap, let base = lineSelection else { return }
         let point = clampedPagePoint(gesture.location(in: content))
         switch gesture.state {
         case .began:
@@ -529,10 +535,43 @@ final class AnnotationCanvasView: UIView {
         targetLineLayer.path = nil
     }
 
+    /// Pages without a text layer still get draggable ends: the rectangle's
+    /// left or right edge follows the finger.
+    private func dragRectHandle(_ gesture: UIPanGestureRecognizer, role: HandleRole) {
+        guard var rect = rectSelection else { return }
+        let contentPoint = clampToContent(gesture.location(in: content))
+        let width = max(content.bounds.width, 1)
+        let x = min(max(contentPoint.x / width, 0), 1)
+        switch gesture.state {
+        case .began:
+            hideActionBar()
+        case .changed:
+            if role == .start {
+                let maxX = rect.maxX
+                let newMinX = min(x, maxX - 0.01)
+                rect = CGRect(x: newMinX, y: rect.minY,
+                              width: maxX - newMinX, height: rect.height)
+            } else {
+                let minX = rect.minX
+                let newMaxX = max(x, minX + 0.01)
+                rect = CGRect(x: minX, y: rect.minY,
+                              width: newMaxX - minX, height: rect.height)
+            }
+            rectSelection = rect
+            renderThrottled()
+            updateHandlePositions()
+        case .ended, .cancelled, .failed:
+            renderThrottled(force: true)
+            showHandles()
+            showActionBar()
+        default:
+            break
+        }
+    }
+
     private func showHandles() {
-        guard usesLineSnapping, contentSelectionRect() != nil else {
+        guard contentSelectionRect() != nil else {
             hideHandles()
-            logFallbackReason()
             return
         }
         startHandle.isHidden = false
@@ -633,9 +672,11 @@ final class AnnotationCanvasView: UIView {
         let size = actionBar.frame.size
         var x = canvasRect.midX - size.width / 2
         x = min(max(x, 8), max(bounds.width - size.width - 8, 8))
-        var y = canvasRect.minY - size.height - 8
+        // Clear of the 44 pt handle targets, so the bar never sits on them.
+        let handleRadius = SelectionHandleView.touchSize / 2
+        var y = canvasRect.minY - handleRadius - size.height - 4
         if y < safeAreaInsets.top + 8 {
-            y = canvasRect.maxY + 8
+            y = canvasRect.maxY + handleRadius + 4
         }
         actionBar.frame = CGRect(origin: CGPoint(x: x, y: y), size: size)
     }
