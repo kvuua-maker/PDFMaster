@@ -26,6 +26,7 @@ jobs:
           set -euo pipefail
           swiftc -O \
             PDFMaster/Modules/PDFModule/Engine/PageTextMap.swift \
+            PDFMaster/Modules/PDFModule/Model/AnnotationSession.swift \
             scripts/PageTextMapTests/main.swift \
             -o "$RUNNER_TEMP/pagetext-tests"
           "$RUNNER_TEMP/pagetext-tests" 2>&1 | tee tests.log

@@ -1,21 +1,23 @@
 import SwiftUI
 import UIKit
 
-/// Precise annotation placement on the rendered page.
+/// Annotation editing session for the first page.
 ///
-/// Two fingers zoom and pan the page even while a tool is active, one finger
-/// draws. Underline and strike-through take their length from the drag, so the
-/// line ends exactly where the finger is lifted instead of at a fixed default
-/// width, and the result is applied wherever the page is zoomed or scrolled to.
+/// The toolbar is an editing panel, not an exit: Undo removes the last drawn
+/// annotation of this session, Redo puts it back, and Done is the only way to
+/// leave the mode — it writes the whole session to the PDF at once.
+///
+/// The active (not yet applied) selection is adjusted on the canvas itself:
+/// drag handles, or the ↑/↓/Apply/Clear panel floating above it.
 struct AnnotationPlacementView: View {
     let image: UIImage?
     let kind: PDFAnnotationKind
     /// Glyph geometry of the page, used by the row-accurate line tools.
     let textMap: PageTextMap?
-    let onApply: (CGRect) -> Void
-    let onCancel: () -> Void
+    let onApply: ([PlacedAnnotation]) -> Void
 
-    @State private var selection: CGRect?
+    /// Session stack: what is drawn, plus what Undo can put back. Done drops it.
+    @State private var session = AnnotationSession<PlacedAnnotation>()
     @State private var showHint = true
 
     var body: some View {
@@ -28,17 +30,7 @@ struct AnnotationPlacementView: View {
             .midnightScreen()
             .navigationTitle(kind.title)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(PDFL10n.t("Скасувати")) { onCancel() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(PDFL10n.t("Додати")) {
-                        if let selection { onApply(selection) }
-                    }
-                    .disabled(selection == nil)
-                }
-            }
+            .safeAreaInset(edge: .bottom, spacing: 0) { editingBar }
             .task {
                 try? await Task.sleep(for: .seconds(6))
                 withAnimation(.easeOut(duration: 0.4)) { showHint = false }
@@ -49,13 +41,53 @@ struct AnnotationPlacementView: View {
 
     @ViewBuilder private var page: some View {
         if let image {
-            AnnotationCanvas(image: image, kind: kind, textMap: textMap, selection: $selection)
+            AnnotationCanvas(image: image,
+                             kind: kind,
+                             textMap: textMap,
+                             annotations: session.drawn,
+                             onCommit: { session.add($0) })
                 .ignoresSafeArea(edges: .bottom)
         } else {
             Text(PDFL10n.t("Немає сторінки для анотації"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var editingBar: some View {
+        HStack(spacing: 4) {
+            Button { session.undo() } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .frame(width: 44, height: 40)
+            }
+            .disabled(!session.canUndo)
+            .accessibilityLabel(PDFL10n.t("Скасувати останню анотацію"))
+            .accessibilityIdentifier("annotation.undo")
+
+            Button { session.redo() } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .frame(width: 44, height: 40)
+            }
+            .disabled(!session.canRedo)
+            .accessibilityLabel(PDFL10n.t("Повторити скасовану анотацію"))
+            .accessibilityIdentifier("annotation.redo")
+
+            Spacer(minLength: 8)
+
+            Button {
+                onApply(session.drawn)
+            } label: {
+                Label(PDFL10n.t("Готово"), systemImage: "checkmark")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .frame(height: 40)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("annotation.done")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder private var hint: some View {
@@ -72,25 +104,28 @@ struct AnnotationPlacementView: View {
                 .transition(.opacity)
         }
     }
+
 }
 
-/// Bridges the UIKit canvas into SwiftUI; the binding only carries the final,
-/// normalised rectangle the engine needs.
+/// Bridges the UIKit canvas into SwiftUI. The canvas draws the session itself;
+/// this binding only mirrors the stack so undo/redo redraws in the same frame.
 private struct AnnotationCanvas: UIViewRepresentable {
     let image: UIImage
     let kind: PDFAnnotationKind
     let textMap: PageTextMap?
-    @Binding var selection: CGRect?
+    let annotations: [PlacedAnnotation]
+    let onCommit: (PlacedAnnotation) -> Void
 
     func makeUIView(context: Context) -> AnnotationCanvasView {
         let view = AnnotationCanvasView(image: image, kind: kind, textMap: textMap)
         let coordinator = context.coordinator
-        view.onSelection = { rect in coordinator.parent.selection = rect }
+        view.onCommit = { item in coordinator.parent.onCommit(item) }
         return view
     }
 
     func updateUIView(_ view: AnnotationCanvasView, context: Context) {
         context.coordinator.parent = self
+        view.setAnnotations(annotations)
         view.update(kind: kind)
     }
 

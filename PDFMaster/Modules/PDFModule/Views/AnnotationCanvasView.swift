@@ -1,57 +1,64 @@
 import QuartzCore
 import UIKit
 
-/// Zoomable, pannable page canvas for placing an annotation precisely.
+/// Zoomable, pannable page canvas for annotating the first page.
 ///
-/// The page image lives inside a scroll view, which gives three things the
-/// first implementation did not have:
+/// The page image lives inside a scroll view, which gives three things:
 /// * pinch-to-zoom and a two-finger drag pan the page while a tool is active;
 /// * every touch is converted through the content view, whose bounds are the
-///   page itself, so the rectangle is exact at any zoom level or scroll offset;
+///   page itself, so a rectangle is exact at any zoom level or scroll offset;
 /// * one finger draws — for underline and strike-through the drag distance
 ///   sets the line length.
 ///
-/// Line tools (underline, strike-through, circle) no longer select the finger's
-/// rectangle. They snap to the glyph boxes of one text row, which is why the
-/// selection can no longer swallow two lines. The row geometry is precomputed
-/// by `PageTextMap`, so a drag does arithmetic only: no PDFKit call runs on the
-/// gesture path and nothing blocks the main thread.
+/// Line tools snap to one text row: the row is chosen by its baseline, its line
+/// height comes from the spacing between neighbouring baselines, and the
+/// selection is the union of that row's glyph boxes. Two rows can therefore
+/// never end up in one selection.
+///
+/// A session is drawn in the canvas and applied only when the user taps Done:
+/// the active selection can be adjusted with handles or with the ↑/↓/Apply/Clear
+/// panel, and committed annotations are redrawn instantly for undo/redo. No
+/// PDFKit call happens on the gesture path — `PageTextMap` was built once when
+/// the tool was picked.
 @MainActor
 final class AnnotationCanvasView: UIView {
     let scrollView = UIScrollView()
     let content = UIView()
 
     private let imageView = UIImageView()
-    private let selectionLayer = CAShapeLayer()
+    private let committedLayer = CAShapeLayer()
     private let targetLineLayer = CAShapeLayer()
+    private let selectionLayer = CAShapeLayer()
     private let zoomDelegate = CanvasZoomDelegate()
     private let drawGesture = UIPanGestureRecognizer()
     private let wordTap = UITapGestureRecognizer()
     private let startHandle = SelectionHandleView(isStart: true)
     private let endHandle = SelectionHandleView(isStart: false)
+    private let actionBar = SelectionActionBar()
+
+    /// Session annotations, mirrored from SwiftUI so undo/redo redraws instantly.
+    private var annotations: [PlacedAnnotation] = []
 
     private let pageImage: UIImage
     private let textMap: PageTextMap?
     private var kind: PDFAnnotationKind
 
-    /// Free rectangle tools, normalised (0…1, top-left origin).
+    /// Free rectangle tools (and pages without a text layer).
     private var rectSelection: CGRect?
-    private var committedRect: CGRect?
     private var rectAnchor: CGPoint?
 
     /// Line tools.
     private var lineSelection: PageLineSelection?
-    private var committedLine: PageLineSelection?
     private var anchorLine: Int?
     private var dragStartX: CGFloat?
 
-    private enum HandleRole { case start, end }
-
     private var fitted = false
     private var lastRender: CFTimeInterval = 0
+    private var lastDrawnRect: CGRect = .null
+    private var highlightedLine: Int?
 
-    /// Called on the main actor after a selection is committed.
-    var onSelection: ((CGRect?) -> Void)?
+    /// Called when the user confirms the active selection.
+    var onCommit: ((PlacedAnnotation) -> Void)?
 
     init(image: UIImage, kind: PDFAnnotationKind, textMap: PageTextMap?) {
         self.pageImage = image
@@ -92,17 +99,23 @@ final class AnnotationCanvasView: UIView {
         imageView.isUserInteractionEnabled = false
         content.addSubview(imageView)
 
-        selectionLayer.frame = content.bounds
-        selectionLayer.fillColor = kind.color.withAlphaComponent(0.22).cgColor
-        selectionLayer.strokeColor = kind.color.cgColor
-        selectionLayer.lineWidth = 2
-        content.layer.addSublayer(selectionLayer)
+        committedLayer.frame = content.bounds
+        committedLayer.fillColor = kind.color.withAlphaComponent(0.18).cgColor
+        committedLayer.strokeColor = kind.color.withAlphaComponent(0.6).cgColor
+        committedLayer.lineWidth = 1.5
+        content.layer.addSublayer(committedLayer)
 
         targetLineLayer.frame = content.bounds
         targetLineLayer.fillColor = kind.color.withAlphaComponent(0.14).cgColor
         targetLineLayer.strokeColor = UIColor.clear.cgColor
         targetLineLayer.isHidden = true
-        content.layer.insertSublayer(targetLineLayer, below: selectionLayer)
+        content.layer.addSublayer(targetLineLayer)
+
+        selectionLayer.frame = content.bounds
+        selectionLayer.fillColor = kind.color.withAlphaComponent(0.22).cgColor
+        selectionLayer.strokeColor = kind.color.cgColor
+        selectionLayer.lineWidth = 2
+        content.layer.addSublayer(selectionLayer)
 
         drawGesture.addTarget(self, action: #selector(handleDraw(_:)))
         drawGesture.maximumNumberOfTouches = 1
@@ -112,15 +125,29 @@ final class AnnotationCanvasView: UIView {
         wordTap.require(toFail: drawGesture)
         content.addGestureRecognizer(wordTap)
 
-        // Handles sit above the scroll view, so a touch that starts on one of
-        // them never reaches the draw gesture or the scroll pan: the drag is
-        // already exclusive without a recogniser-priority dance.
+        // Handles and the panel sit above the scroll view, so a touch that
+        // starts on them never reaches the draw gesture or the scroll pan.
         startHandle.setColor(kind.color)
         endHandle.setColor(kind.color)
         startHandle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handleStartPanned(_:))))
         endHandle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handleEndPanned(_:))))
         addSubview(startHandle)
         addSubview(endHandle)
+
+        actionBar.onMoveUp = { [weak self] in self?.moveSelection(by: -1) }
+        actionBar.onMoveDown = { [weak self] in self?.moveSelection(by: 1) }
+        actionBar.onApply = { [weak self] in self?.commitActiveSelection() }
+        actionBar.onClear = { [weak self] in self?.clearActiveSelection() }
+        addSubview(actionBar)
+    }
+
+    // MARK: - Session
+
+    /// Mirrors the SwiftUI session stack so undo/redo is visible immediately.
+    func setAnnotations(_ items: [PlacedAnnotation]) {
+        guard items != annotations else { return }
+        annotations = items
+        drawCommitted()
     }
 
     /// The tool can change while the canvas is on screen.
@@ -128,20 +155,31 @@ final class AnnotationCanvasView: UIView {
         if newKind == kind { return }
         let wasLineTool = usesLineSnapping
         kind = newKind
+        committedLayer.fillColor = newKind.color.withAlphaComponent(0.18).cgColor
+        committedLayer.strokeColor = newKind.color.withAlphaComponent(0.6).cgColor
         selectionLayer.fillColor = newKind.color.withAlphaComponent(0.22).cgColor
         selectionLayer.strokeColor = newKind.color.cgColor
         targetLineLayer.fillColor = newKind.color.withAlphaComponent(0.14).cgColor
         startHandle.setColor(newKind.color)
         endHandle.setColor(newKind.color)
         if wasLineTool != usesLineSnapping {
-            lineSelection = nil
-            committedLine = nil
-            rectSelection = nil
-            committedRect = nil
-            hideHandles()
-            onSelection?(nil)
+            clearActiveSelection()
         }
+        drawCommitted()
         renderThrottled(force: true)
+    }
+
+    private func drawCommitted() {
+        guard !annotations.isEmpty else {
+            committedLayer.path = nil
+            return
+        }
+        let path = UIBezierPath()
+        for item in annotations {
+            path.append(UIBezierPath(rect: contentRect(fromNormalised: item.rect)))
+        }
+        committedLayer.path = path.cgPath
+        committedLayer.lineWidth = max(1.5 / max(scrollView.zoomScale, 0.05), 0.4)
     }
 
     // MARK: - Layout and zoom
@@ -178,6 +216,8 @@ final class AnnotationCanvasView: UIView {
                                                bottom: vertical, right: horizontal)
         renderSelection()
         updateHandlePositions()
+        updateActionBarPosition()
+        drawCommitted()
     }
 
     // MARK: - Tool mode
@@ -210,6 +250,12 @@ final class AnnotationCanvasView: UIView {
                       width: pageRect.width * scaleX, height: pageRect.height * scaleY)
     }
 
+    private func contentRect(fromNormalised rect: CGRect) -> CGRect {
+        let size = content.bounds.size
+        return CGRect(x: rect.minX * size.width, y: rect.minY * size.height,
+                      width: rect.width * size.width, height: rect.height * size.height)
+    }
+
     private func clampToContent(_ point: CGPoint) -> CGPoint {
         let size = content.bounds.size
         return CGPoint(x: min(max(point.x, 0), size.width),
@@ -223,7 +269,8 @@ final class AnnotationCanvasView: UIView {
     private func toleranceForZoom() -> CGFloat {
         let fit = scrollView.minimumZoomScale > 0 ? scrollView.minimumZoomScale : 1
         let relativeZoom = max(scrollView.zoomScale / fit, 1)
-        return PageTextMap.tolerance(base: 10, relativeZoom: relativeZoom, lineHeight: 12)
+        let height = textMap?.lines.first?.lineHeight ?? 12
+        return PageTextMap.tolerance(base: 10, relativeZoom: relativeZoom, lineHeight: height)
     }
 
     // MARK: - Drawing gesture
@@ -240,6 +287,8 @@ final class AnnotationCanvasView: UIView {
     private func handleRectDraw(_ gesture: UIPanGestureRecognizer, at point: CGPoint) {
         switch gesture.state {
         case .began:
+            hideActionBar()
+            hideHandles()
             rectAnchor = point
             rectSelection = makeRectSelection(from: point, to: point)
             renderThrottled(force: true)
@@ -250,15 +299,14 @@ final class AnnotationCanvasView: UIView {
         case .ended:
             guard let rectAnchor else { return }
             self.rectAnchor = nil
-            let finished = makeRectSelection(from: rectAnchor, to: point)
-            rectSelection = finished
-            committedRect = finished
+            rectSelection = makeRectSelection(from: rectAnchor, to: point)
             renderThrottled(force: true)
-            onSelection?(finished)
+            showActionBar()
         case .cancelled, .failed:
             rectAnchor = nil
-            rectSelection = committedRect
+            rectSelection = nil
             renderThrottled(force: true)
+            hideActionBar()
         default:
             break
         }
@@ -269,6 +317,7 @@ final class AnnotationCanvasView: UIView {
         switch gesture.state {
         case .began:
             hideHandles()
+            hideActionBar()
             hideTargetLine()
             guard let line = textMap.lineIndex(atY: point.y, tolerance: toleranceForZoom()) else {
                 // No row under the finger: show nothing rather than a box the
@@ -276,9 +325,7 @@ final class AnnotationCanvasView: UIView {
                 anchorLine = nil
                 dragStartX = nil
                 lineSelection = nil
-                committedLine = nil
                 renderThrottled(force: true)
-                onSelection?(nil)
                 return
             }
             anchorLine = line
@@ -295,21 +342,20 @@ final class AnnotationCanvasView: UIView {
             anchorLine = nil
             dragStartX = nil
             guard let finished = textMap.selection(onLine: line, fromX: startX, toX: point.x) else {
-                lineSelection = committedLine
                 renderThrottled(force: true)
                 return
             }
             lineSelection = finished
-            committedLine = finished
             renderThrottled(force: true)
             showHandles()
-            onSelection?(normalisedSelection)
+            showActionBar()
         case .cancelled, .failed:
             anchorLine = nil
             dragStartX = nil
-            lineSelection = committedLine
+            lineSelection = nil
             renderThrottled(force: true)
-            showHandles()
+            hideHandles()
+            hideActionBar()
         default:
             break
         }
@@ -320,18 +366,13 @@ final class AnnotationCanvasView: UIView {
         guard usesLineSnapping, let textMap else { return }
         let point = clampedPagePoint(gesture.location(in: content))
         guard let word = textMap.wordSelection(at: point, tolerance: toleranceForZoom()) else {
-            lineSelection = nil
-            committedLine = nil
-            renderThrottled(force: true)
-            hideHandles()
-            onSelection?(nil)
+            clearActiveSelection()
             return
         }
         lineSelection = word
-        committedLine = word
         renderThrottled(force: true)
         showHandles()
-        onSelection?(normalisedSelection)
+        showActionBar()
     }
 
     // MARK: - Handles
@@ -344,15 +385,17 @@ final class AnnotationCanvasView: UIView {
         handleHandleDrag(gesture, role: .end)
     }
 
+    private enum HandleRole { case start, end }
+
     private func handleHandleDrag(_ gesture: UIPanGestureRecognizer, role: HandleRole) {
         guard usesLineSnapping, let textMap, let base = lineSelection else { return }
         let point = clampedPagePoint(gesture.location(in: content))
         switch gesture.state {
         case .began:
-            break
+            hideActionBar()
         case .changed:
-            // Snap to the nearest row, so moving one finger across rows is a
-            // single, predictable step instead of a fight with a threshold.
+            // Snap to the nearest baseline, so moving one finger across rows is
+            // a single, predictable step instead of a fight with a threshold.
             let line = textMap.nearestLineIndex(atY: point.y) ?? base.line
             var candidate = textMap.clamped(base, to: line)
             let index = textMap.charIndex(inLine: line, atX: point.x)
@@ -366,16 +409,16 @@ final class AnnotationCanvasView: UIView {
             }
             lineSelection = candidate
             showTargetLine(line)
-            // The layer path is throttled; the handle itself follows every
-            // event so the dot never feels laggy under the finger.
+            // Only the selection path and the two 44 pt handles are touched;
+            // the path itself is capped at 30 fps, the handles follow every
+            // event so the dot never feels laggy.
             renderThrottled()
             updateHandlePositions()
         case .ended, .cancelled, .failed:
             hideTargetLine()
-            committedLine = lineSelection
             renderThrottled(force: true)
             showHandles()
-            onSelection?(normalisedSelection)
+            showActionBar()
         default:
             break
         }
@@ -387,6 +430,8 @@ final class AnnotationCanvasView: UIView {
             hideTargetLine()
             return
         }
+        guard highlightedLine != index else { return }
+        highlightedLine = index
         let zoom = max(scrollView.zoomScale, 0.1)
         let rowRect = contentRect(from: textMap.lines[index].rect)
         let padded = rowRect.insetBy(dx: -4 / zoom, dy: -1.5 / zoom)
@@ -396,6 +441,7 @@ final class AnnotationCanvasView: UIView {
     }
 
     private func hideTargetLine() {
+        highlightedLine = nil
         targetLineLayer.isHidden = true
         targetLineLayer.path = nil
     }
@@ -425,6 +471,76 @@ final class AnnotationCanvasView: UIView {
         endHandle.clipsInnerHalf = overlapping
     }
 
+    // MARK: - Action bar
+
+    private func showActionBar() {
+        guard contentSelectionRect() != nil else {
+            hideActionBar()
+            return
+        }
+        actionBar.isHidden = false
+        updateActionBarState()
+        updateActionBarPosition()
+    }
+
+    private func hideActionBar() {
+        actionBar.isHidden = true
+    }
+
+    private func updateActionBarState() {
+        guard usesLineSnapping, let textMap, let lineSelection else {
+            actionBar.update(canMoveUp: false, canMoveDown: false)
+            return
+        }
+        actionBar.update(canMoveUp: textMap.moved(lineSelection, by: -1) != nil,
+                         canMoveDown: textMap.moved(lineSelection, by: 1) != nil)
+    }
+
+    fileprivate func updateActionBarPosition() {
+        guard !actionBar.isHidden, let rect = contentSelectionRect() else { return }
+        let canvasRect = content.convert(rect, to: self)
+        let size = actionBar.frame.size
+        var x = canvasRect.midX - size.width / 2
+        x = min(max(x, 8), max(bounds.width - size.width - 8, 8))
+        var y = canvasRect.minY - size.height - 8
+        if y < safeAreaInsets.top + 8 {
+            y = canvasRect.maxY + 8
+        }
+        actionBar.frame = CGRect(origin: CGPoint(x: x, y: y), size: size)
+    }
+
+    /// Moves the active selection to the neighbouring row — instant, because it
+    /// only re-indexes the cached map.
+    private func moveSelection(by delta: Int) {
+        guard let textMap, let selection = lineSelection,
+              let moved = textMap.moved(selection, by: delta) else { return }
+        lineSelection = moved
+        renderThrottled(force: true)
+        updateActionBarState()
+        showHandles()
+        updateActionBarPosition()
+    }
+
+    private func commitActiveSelection() {
+        guard let rect = normalisedSelection else { return }
+        let item = PlacedAnnotation(kind: kind, rect: rect)
+        annotations.append(item)
+        drawCommitted()
+        onCommit?(item)
+        clearActiveSelection()
+    }
+
+    private func clearActiveSelection() {
+        lineSelection = nil
+        rectSelection = nil
+        anchorLine = nil
+        dragStartX = nil
+        hideHandles()
+        hideActionBar()
+        hideTargetLine()
+        renderThrottled(force: true)
+    }
+
     // MARK: - Rendering
 
     private var normalisedSelection: CGRect? {
@@ -441,18 +557,19 @@ final class AnnotationCanvasView: UIView {
             return contentRect(from: pageRect)
         }
         guard let rectSelection else { return nil }
-        let size = content.bounds.size
-        return CGRect(x: rectSelection.minX * size.width,
-                      y: rectSelection.minY * size.height,
-                      width: rectSelection.width * size.width,
-                      height: rectSelection.height * size.height)
+        return contentRect(fromNormalised: rectSelection)
     }
 
     private func renderSelection() {
         guard let rect = contentSelectionRect() else {
-            selectionLayer.path = nil
+            if lastDrawnRect != .null {
+                selectionLayer.path = nil
+                lastDrawnRect = .null
+            }
             return
         }
+        guard rect != lastDrawnRect else { return }
+        lastDrawnRect = rect
         selectionLayer.path = UIBezierPath(rect: rect).cgPath
         // Keep the outline one physical pixel-ish wide at every zoom level.
         selectionLayer.lineWidth = max(1.5 / max(scrollView.zoomScale, 0.05), 0.4)
@@ -465,6 +582,7 @@ final class AnnotationCanvasView: UIView {
         lastRender = now
         renderSelection()
         updateHandlePositions()
+        updateActionBarPosition()
     }
 
     // MARK: - Geometry for rectangle tools
@@ -530,6 +648,9 @@ private final class CanvasZoomDelegate: NSObject, UIScrollViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard let canvas else { return }
-        MainActor.assumeIsolated { canvas.updateHandlePositions() }
+        MainActor.assumeIsolated {
+            canvas.updateHandlePositions()
+            canvas.updateActionBarPosition()
+        }
     }
 }

@@ -70,12 +70,12 @@ extension PDFToolsModel {
         run { Optional(try await PDFToolsEngine.shared.crop(url, normalizedRect: rect)) }
     }
 
-    func placeAnnotation(_ rect: CGRect) {
+    /// Writes the whole editing session in one pass when the user taps Done.
+    func applyAnnotations(_ items: [PlacedAnnotation]) {
         showPlacement = false
-        guard let url = results.first else { return }
-        let kind = placementKind
-        run { Optional(try await PDFToolsEngine.shared.addAnnotation(url, kind: kind, normalizedRect: rect)) }
         releasePlacementImageSoon()
+        guard let url = results.first, !items.isEmpty else { return }
+        run { Optional(try await PDFToolsEngine.shared.addAnnotations(url, items: items)) }
     }
 
     func startPlacement(_ kind: PDFAnnotationKind) {
@@ -102,11 +102,6 @@ extension PDFToolsModel {
             placementTextMap = nil
         }
         showPlacement = true
-    }
-
-    func cancelPlacement() {
-        showPlacement = false
-        releasePlacementImageSoon()
     }
 
     /// The cover keeps drawing its content while it animates out, so the

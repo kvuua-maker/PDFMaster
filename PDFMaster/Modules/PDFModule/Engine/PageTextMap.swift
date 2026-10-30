@@ -14,9 +14,15 @@ struct PageLineSelection: Equatable {
 
 /// Text geometry of a single PDF page, precomputed once.
 ///
-/// The whole point of this type is that hit testing during a drag is pure
-/// arithmetic: `PDFPage.characterBounds(at:)` is called here, never on the
-/// gesture path, so dragging cannot block the main thread inside PDFKit.
+/// Rows are modelled the way a typesetter sees them, not the way their glyph
+/// boxes happen to overlap: every row has a baseline and a line height taken
+/// from the spacing between neighbouring baselines (falling back to the row's
+/// own glyph height). Two rows therefore never merge, which is what stopped a
+/// selection from swallowing two lines when the page was zoomed in.
+///
+/// Hit testing during a drag is pure arithmetic: `PDFPage.characterBounds(at:)`
+/// is called here, never on the gesture path, so dragging cannot block the main
+/// thread inside PDFKit.
 ///
 /// All rectangles are in page points with a top-left origin, i.e. the same
 /// orientation as the rendered page image. Everything the engine consumes is
@@ -25,20 +31,39 @@ struct PageTextMap {
     struct Line {
         /// Union of every glyph box on the line.
         let rect: CGRect
-        /// Approximate baseline: the glyph bottom minus a descender allowance.
+        /// Baseline: the bottom of the glyphs that have no descender.
         let baselineY: CGFloat
+        /// Distance to the neighbouring baseline, clamped to a sane range.
+        let lineHeight: CGFloat
         /// Glyph boxes, sorted left to right.
         let chars: [CGRect]
+
+        /// Vertical band the row owns: half a line height either side of the
+        /// baseline, i.e. up to the midpoints between neighbouring baselines.
+        /// Bands of adjacent rows therefore meet exactly where the "nearest
+        /// baseline" decision flips, so inside a text block a point belongs to
+        /// exactly one row and never falls into a dead gap.
+        var band: CGRect {
+            CGRect(x: rect.minX,
+                   y: baselineY - lineHeight * 0.5,
+                   width: max(rect.width, 1),
+                   height: lineHeight)
+        }
     }
 
     let pageSize: CGSize
     let lines: [Line]
+
+    /// Counts PDFKit calls, so a test can prove that hit testing stays clear of
+    /// PDFKit once the map exists.
+    nonisolated(unsafe) static var pdfCallCount = 0
 
     var isEmpty: Bool { lines.isEmpty }
 
     // MARK: - Building
 
     static func make(from url: URL, pageIndex: Int = 0) -> PageTextMap? {
+        pdfCallCount += 1
         guard let document = PDFDocument(url: url),
               let page = document.page(at: pageIndex) else { return nil }
         let media = page.bounds(for: .mediaBox)
@@ -53,6 +78,7 @@ struct PageTextMap {
         var boxes: [CGRect] = []
         boxes.reserveCapacity(count)
         for index in 0..<count {
+            pdfCallCount += 1
             let raw = page.characterBounds(at: index)
             guard raw.width > 0.5, raw.height > 0.5 else { continue }
             boxes.append(CGRect(x: raw.minX - media.minX,
@@ -62,38 +88,60 @@ struct PageTextMap {
         }
         guard !boxes.isEmpty else { return nil }
 
-        // Group glyphs into lines: sort by vertical centre and start a new line
-        // as soon as the centre drifts by more than half a glyph height.
-        boxes.sort { $0.midY < $1.midY }
+        // Group glyphs by baseline. Descenders sit a little below the baseline,
+        // so a glyph joins the row while it is within a fraction of the row's
+        // height; the next row starts a full line height lower, which is well
+        // outside that window.
+        boxes.sort { $0.maxY < $1.maxY }
         var clusters: [[CGRect]] = []
-        var clusterRect = CGRect.null
+        var baseline: CGFloat = 0
+        var clusterHeight: CGFloat = 0
         for box in boxes {
-            if clusterRect.isNull {
-                clusters.append([box])
-                clusterRect = box
-                continue
-            }
-            let threshold = max(clusterRect.height, box.height) * 0.55
-            if abs(box.midY - clusterRect.midY) <= threshold {
+            let joins = !clusters.isEmpty
+                && abs(box.maxY - baseline) <= max(clusterHeight * 0.45, 2)
+            if joins {
                 clusters[clusters.count - 1].append(box)
-                clusterRect = clusterRect.union(box)
+                baseline = min(baseline, box.maxY)
+                clusterHeight = max(clusterHeight, box.height)
             } else {
                 clusters.append([box])
-                clusterRect = box
+                baseline = box.maxY
+                clusterHeight = box.height
             }
         }
 
-        var lines: [Line] = []
-        lines.reserveCapacity(clusters.count)
+        var raw: [(rect: CGRect, baseline: CGFloat, chars: [CGRect])] = []
+        raw.reserveCapacity(clusters.count)
         for cluster in clusters {
             let sorted = cluster.sorted { $0.minX < $1.minX }
             let rect = sorted.reduce(CGRect.null) { $0.union($1) }
             guard rect.width > 1, rect.height > 1 else { continue }
-            let baseline = rect.maxY - rect.height * 0.18
-            lines.append(Line(rect: rect, baselineY: baseline, chars: sorted))
+            let rowBaseline = sorted.map(\.maxY).min() ?? rect.maxY
+            raw.append((rect, rowBaseline, sorted))
         }
-        guard !lines.isEmpty else { return nil }
-        lines.sort { $0.rect.minY < $1.rect.minY }
+        guard !raw.isEmpty else { return nil }
+        raw.sort { $0.baseline < $1.baseline }
+
+        var lines: [Line] = []
+        lines.reserveCapacity(raw.count)
+        for (index, row) in raw.enumerated() {
+            // Prefer the spacing to the next row, so consecutive bands tile;
+            // the last row borrows the spacing above it.
+            let next = index + 1 < raw.count ? raw[index + 1].baseline - row.baseline : nil
+            let previous = index > 0 ? row.baseline - raw[index - 1].baseline : nil
+            let measured = next ?? previous ?? 0
+            let fallback = max(row.rect.height * 1.35, 8)
+            let lineHeight: CGFloat
+            if measured > 4 {
+                lineHeight = min(max(measured, 8), max(row.rect.height * 2.6, 12))
+            } else {
+                lineHeight = fallback
+            }
+            lines.append(Line(rect: row.rect,
+                              baselineY: row.baseline,
+                              lineHeight: lineHeight,
+                              chars: row.chars))
+        }
         return PageTextMap(pageSize: CGSize(width: media.width, height: media.height),
                            lines: lines)
     }
@@ -101,48 +149,53 @@ struct PageTextMap {
     // MARK: - Hit testing
 
     /// Tolerance in page points. It shrinks as the page is zoomed in, so a
-    /// finger covers fewer page points at 3× than at 1×, and it never exceeds
-    /// the line's own height — which is what stops a tap from reaching the
-    /// neighbouring line.
+    /// finger covers fewer page points at 3× than at 1×, and it is clamped to
+    /// 40% of the row height so it can never reach the neighbouring row.
     static func tolerance(base: CGFloat, relativeZoom: CGFloat, lineHeight: CGFloat) -> CGFloat {
         let scaled = base / max(relativeZoom, 1)
-        return min(scaled, max(lineHeight * 0.9, 2))
+        return min(scaled, max(lineHeight * 0.4, 1))
     }
 
-    /// Line under a vertical position, or nil when nothing is close enough.
+    /// Row under a vertical position. The nearest baseline wins, but only while
+    /// the point is inside the row's band plus the zoom-scaled tolerance;
+    /// otherwise there is no row and no selection is created.
     func lineIndex(atY y: CGFloat, tolerance: CGFloat) -> Int? {
-        var best: (index: Int, distance: CGFloat)?
+        guard !lines.isEmpty else { return nil }
+        // The closest baseline decides which row the finger means; the band and
+        // the tolerance only decide whether the finger is close enough to any
+        // text at all.
+        var closest = 0
+        var closestDistance = CGFloat.greatestFiniteMagnitude
         for (index, line) in lines.enumerated() {
-            let distance: CGFloat
-            if y < line.rect.minY {
-                distance = line.rect.minY - y
-            } else if y > line.rect.maxY {
-                distance = y - line.rect.maxY
-            } else {
-                distance = 0
-            }
-            let limit = min(tolerance, max(line.rect.height * 0.9, 2))
-            guard distance <= limit else { continue }
-            if best == nil || distance < best!.distance {
-                best = (index, distance)
+            let distance = abs(y - line.baselineY)
+            if distance < closestDistance {
+                closestDistance = distance
+                closest = index
             }
         }
-        return best?.index
+        let line = lines[closest]
+        let band = line.band
+        let outside: CGFloat
+        if y < band.minY {
+            outside = band.minY - y
+        } else if y > band.maxY {
+            outside = y - band.maxY
+        } else {
+            outside = 0
+        }
+        // Never let the miss margin exceed 40% of the row height, whatever
+        // tolerance the caller derived from the zoom level.
+        let limit = min(tolerance, max(line.lineHeight * 0.4, 1))
+        return outside <= limit ? closest : nil
     }
 
-    /// Closest line regardless of distance — used while dragging a handle, so
-    /// the selection always snaps somewhere and never gets stuck between rows.
+    /// Closest baseline regardless of distance — used while dragging a handle,
+    /// so the selection always snaps somewhere and never gets stuck between
+    /// rows.
     func nearestLineIndex(atY y: CGFloat) -> Int? {
         var best: (index: Int, distance: CGFloat)?
         for (index, line) in lines.enumerated() {
-            let distance: CGFloat
-            if y < line.rect.minY {
-                distance = line.rect.minY - y
-            } else if y > line.rect.maxY {
-                distance = y - line.rect.maxY
-            } else {
-                distance = 0
-            }
+            let distance = abs(y - line.baselineY)
             if best == nil || distance < best!.distance {
                 best = (index, distance)
             }
@@ -203,7 +256,15 @@ struct PageTextMap {
                                  end: charIndex(inLine: line, atX: toX))
     }
 
-    /// Clamps a selection to a (possibly different) line, so a handle dragged
+    /// Moves a selection by whole rows (the ↑/↓ buttons). Returns nil at the
+    /// first or last row, which is also what disables those buttons.
+    func moved(_ selection: PageLineSelection, by delta: Int) -> PageLineSelection? {
+        let target = selection.line + delta
+        guard lines.indices.contains(target) else { return nil }
+        return clamped(selection, to: target)
+    }
+
+    /// Clamps a selection to a (possibly different) line, so a selection moved
     /// onto the next row keeps a sensible character range.
     func clamped(_ selection: PageLineSelection, to line: Int) -> PageLineSelection {
         guard lines.indices.contains(line) else { return selection }

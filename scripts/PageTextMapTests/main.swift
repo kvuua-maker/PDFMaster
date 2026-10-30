@@ -4,9 +4,10 @@ import CoreText
 import Foundation
 import PDFKit
 
-// Exercises the shipped PageTextMap against a real PDF whose text rows are
-// known, because the device test cases (D1–D4) are geometry decisions that can
-// be measured exactly on any machine with PDFKit.
+// Exercises the shipped annotation geometry and session stack against a real
+// PDF whose text rows are known. The device cases (zoom 1×/2×/3×/5×, undo/redo,
+// ↑/↓ movement, "no PDFKit on the drag path") are geometry and state
+// decisions, so they can be measured exactly here.
 
 var failures = 0
 
@@ -70,88 +71,172 @@ guard let map = PageTextMap.make(from: url) else {
 check(map.lines.count == 3, "fixture page has 3 text rows", "got \(map.lines.count)")
 guard map.lines.count == 3 else { exit(1) }
 
-let row0 = map.lines[0].rect
-let row1 = map.lines[1].rect
-let row2 = map.lines[2].rect
-check(row0.maxY < row1.minY || row1.maxY < row0.minY, "rows do not overlap vertically")
-check(row0.height > 4 && row0.height < 30, "row height is a text row, not the page", "\(row0.height) pt")
+let row0 = map.lines[0]
+let row1 = map.lines[1]
+let row2 = map.lines[2]
 
-let tolerance1x = PageTextMap.tolerance(base: 10, relativeZoom: 1, lineHeight: row1.height)
-let tolerance3x = PageTextMap.tolerance(base: 10, relativeZoom: 3, lineHeight: row1.height)
+// MARK: - Rows are single rows (the Build 40 "two lines" defect)
 
-// D1 — one row at 3×, no neighbour captured.
-check(tolerance3x < tolerance1x, "D1 tolerance shrinks with zoom",
-      String(format: "1× %.2f pt, 3× %.2f pt", tolerance1x, tolerance3x))
-check(map.lineIndex(atY: row1.midY, tolerance: tolerance3x) == 1, "D1 tap on row 2 selects row 2")
-if let selection = map.selection(onLine: 1, fromX: row1.minX + 3, toX: row1.maxX - 3),
-   let rect = map.rect(for: selection) {
-    check(rect.minY >= row1.minY - 0.5 && rect.maxY <= row1.maxY + 0.5,
-          "D1 selection stays inside row 2", "\(rect) vs \(row1)")
-    check(!rect.intersects(row0) && !rect.intersects(row2),
-          "D1 selection does not overlap the neighbouring rows")
-    check(selection.end > selection.start, "D1 drag spans several characters",
-          "chars \(selection.start)…\(selection.end)")
-} else {
-    check(false, "D1 could not build a selection on row 2")
+check(!row0.rect.intersects(row1.rect) && !row1.rect.intersects(row2.rect),
+      "adjacent rows never share a selection rectangle")
+check(row0.rect.height < row0.lineHeight && row1.rect.height < row1.lineHeight,
+      "a row rectangle is shorter than its line height",
+      String(format: "%.1f/%.1f pt", row1.rect.height, row1.lineHeight))
+check(row1.baselineY > row0.baselineY && row2.baselineY > row1.baselineY,
+      "baselines are ordered top to bottom")
+
+// MARK: - Case 1: zoom 1×/2×/3×/5× picks exactly one row, always the same one
+
+let spacing = row1.baselineY - row0.baselineY
+let gap01 = (row0.baselineY + row1.baselineY) / 2
+let gap12 = (row1.baselineY + row2.baselineY) / 2
+let probes: [(String, CGFloat, Int)] = [
+    ("row 1 centre", row0.rect.midY, 0),
+    ("gap 1–2 midpoint", gap01, 0),   // nearest baseline is row 1
+    ("row 2 centre", row1.rect.midY, 1),
+    ("gap 2–3 midpoint", gap12, 1),   // nearest baseline is row 2
+    ("row 3 centre", row2.rect.midY, 2)
+]
+
+for zoom in [CGFloat(1), 2, 3, 5] {
+    let tolerance = PageTextMap.tolerance(base: 10, relativeZoom: zoom, lineHeight: spacing)
+    var resolved: [Int] = []
+    for (name, y, expected) in probes {
+        let hit = map.lineIndex(atY: y, tolerance: tolerance)
+        resolved.append(hit ?? -1)
+        if zoom == 3 {
+            check(hit == expected, "1×–5×: \(name) resolves to row \(expected + 1)",
+                  "got \(hit.map { String($0 + 1) } ?? "none")")
+        }
+    }
+    check(resolved == probes.map { $0.2 }, "zoom \(Int(zoom))× resolves every probe to one row",
+          "\(resolved.map { $0 + 1 })")
 }
 
-// D4 — same accuracy at 1× and 3×.
-let probe = CGPoint(x: row1.midX, y: row1.midY + row1.height * 0.3)
-let hit1x = map.lineIndex(atY: probe.y, tolerance: tolerance1x)
-let hit3x = map.lineIndex(atY: probe.y, tolerance: tolerance3x)
-check(hit1x == hit3x && hit1x == 1, "D4 the same point resolves to the same row at 1× and 3×",
-      "1×: \(String(describing: hit1x)), 3×: \(String(describing: hit3x))")
-
-// D3 — end of the page must not swallow empty space.
-check(map.lineIndex(atY: row2.maxY + 120, tolerance: tolerance1x) == nil,
-      "D3 empty area below the last row selects nothing")
-check(map.lineIndex(atY: row2.maxY + 2, tolerance: tolerance1x) == 2,
-      "D3 a touch just under the last row still selects that row")
-if let last = map.selection(onLine: 2, fromX: row2.minX, toX: row2.maxX),
-   let rect = map.rect(for: last) {
-    check(rect.maxY <= row2.maxY + 0.5, "D3 selection never extends into empty space", "\(rect)")
-}
-
-// D2 — handle snapping between rows.
-let gap = (row0.maxY + row1.minY) / 2
-let gapLine = map.nearestLineIndex(atY: gap)
-check(gapLine == 0 || gapLine == 1, "D2 a handle in the row gap snaps to one neighbouring row",
-      "got \(String(describing: gapLine))")
-check(map.nearestLineIndex(atY: row2.midY) == 2, "D2 a handle dragged onto row 3 lands on row 3")
-if let selection = map.selection(onLine: 0, fromX: row0.minX + 4, toX: row0.minX + 120) {
-    let moved = map.clamped(selection, to: 2)
-    check(moved.line == 2, "D2 the selection follows the handle to another row")
-    if let rect = map.rect(for: moved) {
-        check(rect.minY >= row2.minY - 0.5 && rect.maxY <= row2.maxY + 0.5,
-              "D2 the moved selection stays on row 3", "\(rect) vs \(row2)")
+// A sweep across the whole text block must never return a merged selection.
+var sweepOK = true
+for zoom in [CGFloat(1), 3, 5] {
+    let tolerance = PageTextMap.tolerance(base: 10, relativeZoom: zoom, lineHeight: spacing)
+    var y = row0.rect.minY - 20
+    while y <= row2.rect.maxY + 20 {
+        if let index = map.lineIndex(atY: y, tolerance: tolerance) {
+            let chosen = map.lines[index]
+            let others = map.lines.enumerated().filter { $0.offset != index }.map { $0.element }
+            if others.contains(where: { $0.rect.intersects(chosen.rect) }) { sweepOK = false }
+            if abs(y - chosen.baselineY) > spacing * 0.75 { sweepOK = false }
+        }
+        y += 1
     }
 }
+check(sweepOK, "a 1 pt sweep at 1×/3×/5× never returns a two-row selection")
 
-// A tap should take a word, not the whole row.
-if let word = map.wordSelection(at: CGPoint(x: row0.minX + 10, y: row0.midY), tolerance: tolerance1x),
-   let rect = map.rect(for: word) {
-    check(rect.width < row0.width * 0.5, "tap selects a word, not the whole row",
-          String(format: "%.1f of %.1f pt", rect.width, row0.width))
+// MARK: - Tolerance is clamped to 40% of the row height
+
+check(abs(PageTextMap.tolerance(base: 100, relativeZoom: 1, lineHeight: 20) - 8) < 0.001,
+      "tolerance is clamped to 0.4 × line height", "\(PageTextMap.tolerance(base: 100, relativeZoom: 1, lineHeight: 20)) pt")
+check(PageTextMap.tolerance(base: 10, relativeZoom: 3, lineHeight: 26) <
+      PageTextMap.tolerance(base: 10, relativeZoom: 1, lineHeight: 26),
+      "tolerance shrinks with zoom")
+
+// MARK: - Case 1 (selection rect): a row selection stays on its row
+
+if let selection = map.selection(onLine: 1, fromX: row1.rect.minX + 3, toX: row1.rect.maxX - 3),
+   let rect = map.rect(for: selection) {
+    check(rect.minY >= row1.rect.minY - 0.5 && rect.maxY <= row1.rect.maxY + 0.5,
+          "selection stays inside its row", "\(rect) vs \(row1.rect)")
+    check(!rect.intersects(row0.rect) && !rect.intersects(row2.rect),
+          "selection does not touch the neighbouring rows")
+    check(selection.end > selection.start, "drag spans several characters",
+          "chars \(selection.start)…\(selection.end)")
 } else {
-    check(false, "tap did not resolve to a word")
+    check(false, "could not build a row selection")
 }
 
-// The gesture path must be arithmetic only: 20k hit tests should be trivial.
-let indexSpan = max(Int(row2.maxY - row0.minY), 1)
+// MARK: - Empty space below the text
+
+check(map.lineIndex(atY: row2.rect.maxY + 120, tolerance: 10) == nil,
+      "empty area below the last row selects nothing")
+check(map.lineIndex(atY: row2.rect.maxY + 2, tolerance: 10) == 2,
+      "a touch just under the last row still selects it")
+
+// MARK: - Case 6: ↑ / ↓ movement, Apply/Clear state
+
+if let onRow1 = map.selection(onLine: 1, fromX: row1.rect.minX + 4, toX: row1.rect.minX + 90) {
+    check(map.moved(onRow1, by: -1)?.line == 0, "↑ moves the selection one row up")
+    check(map.moved(onRow1, by: 1)?.line == 2, "↓ moves the selection one row down")
+    if let up = map.moved(onRow1, by: -1), let rect = map.rect(for: up) {
+        check(rect.minY >= row0.rect.minY - 0.5 && rect.maxY <= row0.rect.maxY + 0.5,
+              "the moved selection lands on the target row", "\(rect) vs \(row0.rect)")
+    }
+}
+if let first = map.selection(onLine: 0, fromX: row0.rect.minX, toX: row0.rect.minX + 60) {
+    check(map.moved(first, by: -1) == nil, "↑ is unavailable on the first row")
+}
+if let last = map.selection(onLine: 2, fromX: row2.rect.minX, toX: row2.rect.minX + 60) {
+    check(map.moved(last, by: 1) == nil, "↓ is unavailable on the last row")
+}
+
+// Handle snapping follows the nearest baseline.
+check(map.nearestLineIndex(atY: gap01 - 1) == 0, "a handle above the row gap snaps to row 1")
+check(map.nearestLineIndex(atY: gap01 + 1) == 1, "a handle below the row gap snaps to row 2")
+
+// MARK: - Case 7: the drag path never calls PDFKit
+
+let callsBefore = PageTextMap.pdfCallCount
+let indexSpan = max(Int(row2.rect.maxY - row0.rect.minY), 1)
 let started = CFAbsoluteTimeGetCurrent()
 var hits = 0
+var simulatedDrags = 0
 for index in 0..<20_000 {
-    // Sweep the band that actually holds the three rows, so the loop measures
-    // real hits rather than a run over empty space.
-    let y = row0.minY + CGFloat(index % indexSpan)
-    if map.lineIndex(atY: y, tolerance: tolerance3x) != nil { hits += 1 }
+    let y = row0.rect.minY + CGFloat(index % indexSpan)
+    if map.lineIndex(atY: y, tolerance: 3.33) != nil { hits += 1 }
+}
+// 200 handle events: snap to a row, pick a character, build the rectangle.
+for index in 0..<200 {
+    let y = row0.rect.minY + CGFloat(index % indexSpan)
+    guard let line = map.nearestLineIndex(atY: y) else { continue }
+    let x = row0.rect.minX + CGFloat(index * 2)
+    let char = map.charIndex(inLine: line, atX: x)
+    _ = map.rect(for: PageLineSelection(line: line, start: 0, end: char))
+    simulatedDrags += 1
 }
 let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
-check(elapsed < 100, "D2 20k hit tests stay under 100 ms (no PDFKit on the gesture path)",
+check(PageTextMap.pdfCallCount == callsBefore,
+      "no PDFKit call during hit testing or a simulated drag",
+      "counter \(callsBefore) → \(PageTextMap.pdfCallCount)")
+check(elapsed < 100, "20k hit tests + \(simulatedDrags) handle events stay under 100 ms",
       String(format: "%.1f ms, %d hits", elapsed, hits))
 
-// A page without a text layer must report no rows, so the canvas can fall back
-// to the free rectangle instead of blocking the tool.
+// MARK: - Word tap
+
+if let word = map.wordSelection(at: CGPoint(x: row0.rect.minX + 10, y: row0.rect.midY), tolerance: 10),
+   let rect = map.rect(for: word) {
+    check(rect.width < row0.rect.width * 0.5, "a tap selects a word, not the whole row",
+          String(format: "%.1f of %.1f pt", rect.width, row0.rect.width))
+}
+
+// MARK: - Cases 2–5: undo / redo stack
+
+var session = AnnotationSession<Int>()
+session.add(1)
+session.add(2)
+session.add(3)
+check(session.count == 3, "3 annotations drawn", "count \(session.count)")
+session.undo()
+check(session.count == 2 && session.canUndo, "undo once leaves 2 and stays in the session")
+session.undo()
+session.undo()
+check(session.count == 0 && !session.canUndo, "undo three times leaves 0 and disables undo")
+check(session.canRedo, "redo is available after undo")
+session.redo()
+check(session.count == 1, "redo brings one annotation back", "count \(session.count)")
+session.add(4)
+check(!session.canRedo, "a new annotation clears the redo branch")
+session.clear()
+check(session.count == 0 && !session.canRedo, "Done clears the session stack")
+
+// MARK: - A page without a text layer keeps the rectangle fallback
+
 if let blank = makeBlankPDF(name: "blank.pdf"), let emptyMap = PageTextMap.make(from: blank) {
     check(emptyMap.isEmpty, "scanned page reports no text rows")
 } else {

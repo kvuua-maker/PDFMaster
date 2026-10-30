@@ -538,6 +538,25 @@ actor PDFToolsEngine {
         return target
     }
 
+    /// Writes a whole editing session in one pass, so undo in the canvas never
+    /// touches the file and the PDF is rewritten once when the session ends.
+    func addAnnotations(_ url: URL, items: [PlacedAnnotation], pageIndex: Int = 0) throws -> URL {
+        guard !items.isEmpty else { return url }
+        guard let document = PDFDocument(url: url), pageIndex < document.pageCount,
+              let page = document.page(at: pageIndex) else { throw PDFToolsError.unreadable }
+        let media = page.bounds(for: .mediaBox)
+        for item in items {
+            let rectangle = pageRect(from: item.rect, in: media)
+            let annotation = PDFAnnotation(bounds: rectangle, forType: item.kind.pdfType, withProperties: nil)
+            annotation.color = item.kind.color
+            if item.kind == .comment { annotation.contents = "Коментар" }
+            page.addAnnotation(annotation)
+        }
+        let target = try freshURL("annotated.pdf")
+        guard document.write(to: target) else { throw PDFToolsError.writeFailed }
+        return target
+    }
+
     /// Page indexes (zero-based) whose text contains the query.
     func searchPages(_ url: URL, query: String) throws -> [Int] {
         guard let document = PDFDocument(url: url) else { throw PDFToolsError.unreadable }
@@ -784,6 +803,20 @@ actor PDFToolsEngine {
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let bytes = (attributes?[.size] as? NSNumber)?.intValue ?? 0
         return bytes / 1024
+    }
+}
+
+/// One annotation drawn during a placement session, in normalised page space
+/// (0…1, top-left origin).
+struct PlacedAnnotation: Identifiable, Equatable {
+    let id: UUID
+    let kind: PDFAnnotationKind
+    let rect: CGRect
+
+    init(id: UUID = UUID(), kind: PDFAnnotationKind, rect: CGRect) {
+        self.id = id
+        self.kind = kind
+        self.rect = rect
     }
 }
 
