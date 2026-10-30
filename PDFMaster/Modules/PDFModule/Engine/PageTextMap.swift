@@ -183,10 +183,12 @@ struct PageTextMap {
                 outside = 0
             }
             guard outside <= Self.tolerance(lineHeight: line.lineHeight) else { continue }
+            // Among the rows that are reachable, the nearest baseline decides —
+            // the same rule the handle snapping uses, so both agree.
             let baselineDistance = abs(y - line.baselineY)
             if best == nil
-                || outside < best!.outside
-                || (outside == best!.outside && baselineDistance < best!.baseline) {
+                || baselineDistance < best!.baseline
+                || (baselineDistance == best!.baseline && outside < best!.outside) {
                 best = (index, outside, baselineDistance)
             }
         }
