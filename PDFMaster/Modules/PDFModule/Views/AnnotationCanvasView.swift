@@ -51,8 +51,9 @@ final class AnnotationCanvasView: UIView {
     private var rectSelection: CGRect?
     private var rectAnchor: CGPoint?
 
-    /// Line tools. The selection survives taps and drags until Apply/Clear.
-    private var lineSelection: PageLineSelection?
+    /// Line tools. The selection survives taps and drags until Apply/Clear and
+    /// can cover several rows, like a paragraph in a text editor.
+    private var selection: PageTextSelection?
     /// Page-space point where the current drag started (touch-down, not the
     /// point where the pan happened to be recognised).
     private var dragAnchor: CGPoint?
@@ -61,11 +62,11 @@ final class AnnotationCanvasView: UIView {
 
     private var fitted = false
     private var lastRender: CFTimeInterval = 0
-    private var lastDrawnRect: CGRect = .null
     private var highlightedLine: Int?
 
-    /// Called when the user confirms the active selection.
-    var onCommit: ((PlacedAnnotation) -> Void)?
+    /// Called when the user confirms the active selection. A multi-row commit
+    /// produces one annotation per row (one oval for a circle).
+    var onCommit: (([PlacedAnnotation]) -> Void)?
 
     init(image: UIImage, kind: PDFAnnotationKind, textMap: PageTextMap?) {
         self.pageImage = image
@@ -389,9 +390,8 @@ final class AnnotationCanvasView: UIView {
 
     private func beginLineDrag(at touch: CGPoint, in textMap: PageTextMap) {
         dragAnchor = touch
-        anchorRow = lineSelection?.line
         // An existing selection is adjusted, never thrown away.
-        if let existing = lineSelection {
+        if let existing = selection {
             dragHandle = RowSelectionEditing.nearestHandle(in: textMap,
                                                            selection: existing,
                                                            atX: touch.x)
@@ -400,42 +400,37 @@ final class AnnotationCanvasView: UIView {
         }
         dragHandle = nil
         guard let line = textMap.lineIndex(atY: touch.y) else {
-            anchorRow = nil
             renderThrottled(force: true)
             return
         }
-        anchorRow = line
         let index = textMap.charIndex(inLine: line, atX: touch.x)
-        lineSelection = PageLineSelection(line: line, start: index, end: index)
+        selection = .single(line: line, char: index)
         renderThrottled(force: true)
     }
 
     private func updateLineDrag(to point: CGPoint, in textMap: PageTextMap) {
-        guard let anchor = dragAnchor, let current = lineSelection else { return }
-        var selection = current
-
-        // Slide to the neighbouring row only when the finger really left the
-        // row it started on; the selection itself stays a single row.
-        if let row = textMap.nearestLineIndex(atY: point.y), let row0 = anchorRow, row != row0 {
-            let origin = textMap.lines[row0]
-            if abs(point.y - origin.baselineY) > origin.lineHeight * 0.5 {
-                anchorRow = row
-                selection = textMap.clamped(selection, to: row)
-            }
-        }
+        guard dragAnchor != nil, let current = selection else { return }
 
         if let handle = dragHandle {
-            lineSelection = RowSelectionEditing.moving(handle,
-                                                       toX: point.x,
-                                                       onRow: selection.line,
-                                                       in: textMap,
-                                                       selection: selection)
+            // Dragging an end: the row follows the finger vertically, the
+            // character horizontally.
+            let row = textMap.nearestLineIndex(atY: point.y) ?? current.focusLine
+            selection = RowSelectionEditing.moving(handle,
+                                                   toX: point.x,
+                                                   onRow: row,
+                                                   in: textMap,
+                                                   selection: current)
         } else {
-            // Creating: the start is the touch-down character, the end follows
-            // the finger. Both are character-granular.
-            lineSelection = textMap.selection(onLine: selection.line,
-                                              fromX: anchor.x,
-                                              toX: point.x)
+            // Creating: the anchor stays where the finger landed, the focus
+            // follows it — vertically this grows the selection onto the
+            // neighbouring rows, exactly like a paragraph selection.
+            let row = min(max(textMap.nearestLineIndex(atY: point.y) ?? current.focusLine,
+                              0), textMap.lines.count - 1)
+            let index = textMap.charIndex(inLine: row, atX: point.x)
+            selection = PageTextSelection(anchorLine: current.anchorLine,
+                                          anchorChar: current.anchorChar,
+                                          focusLine: row,
+                                          focusChar: index)
         }
         renderThrottled()
     }
@@ -445,15 +440,16 @@ final class AnnotationCanvasView: UIView {
     @objc private func handleWordTap(_ gesture: UITapGestureRecognizer) {
         guard usesLineSnapping, let textMap else { return }
         let point = clampedPagePoint(gesture.location(in: content))
-        if let selection = lineSelection {
-            lineSelection = RowSelectionEditing.tap(at: point, in: textMap, selection: selection)
+        if let current = selection {
+            selection = RowSelectionEditing.tap(at: point, in: textMap, selection: current)
             renderThrottled(force: true)
             showHandles()
             showActionBar()
             return
         }
         guard let word = textMap.wordSelection(at: point) else { return }
-        lineSelection = word
+        selection = PageTextSelection(anchorLine: word.line, anchorChar: word.start,
+                                      focusLine: word.line, focusChar: word.end)
         renderThrottled(force: true)
         showHandles()
         showActionBar()
@@ -476,7 +472,7 @@ final class AnnotationCanvasView: UIView {
             dragRectHandle(gesture, role: role)
             return
         }
-        guard let textMap, let base = lineSelection else { return }
+        guard let textMap, let base = selection else { return }
         let point = clampedPagePoint(gesture.location(in: content))
         switch gesture.state {
         case .began:
@@ -484,9 +480,9 @@ final class AnnotationCanvasView: UIView {
         case .changed:
             // Snap to the nearest baseline, so moving one finger across rows is
             // a single, predictable step instead of a fight with a threshold.
-            let line = textMap.nearestLineIndex(atY: point.y) ?? base.line
+            let line = textMap.nearestLineIndex(atY: point.y) ?? base.focusLine
             let handle: RowSelectionEditing.Handle = role == .start ? .start : .end
-            lineSelection = RowSelectionEditing.moving(handle,
+            selection = RowSelectionEditing.moving(handle,
                                                        toX: point.x,
                                                        onRow: line,
                                                        in: textMap,
@@ -570,8 +566,9 @@ final class AnnotationCanvasView: UIView {
     }
 
     private func showHandles() {
-        guard contentSelectionRect() != nil else {
+        guard handleAnchors() != nil else {
             hideHandles()
+            logFallbackReason()
             return
         }
         startHandle.isHidden = false
@@ -581,27 +578,25 @@ final class AnnotationCanvasView: UIView {
         updateHandlePositions()
         RuntimeDiagnostics.shared.log(
             "annotation",
-            String(format: "handles hidden=%d start=(%.1f,%.1f) end=(%.1f,%.1f) interaction=%d inWindow=%d",
+            String(format: "handles hidden=%d rows=%d start=(%.1f,%.1f) end=(%.1f,%.1f)",
                    startHandle.isHidden ? 1 : 0,
+                   selection.map { $0.lastLine - $0.firstLine + 1 } ?? 0,
                    startHandle.center.x, startHandle.center.y,
-                   endHandle.center.x, endHandle.center.y,
-                   startHandle.isUserInteractionEnabled ? 1 : 0,
-                   startHandle.window != nil ? 1 : 0)
+                   endHandle.center.x, endHandle.center.y)
         )
     }
 
     private func logSelectionGeometry() {
-        guard let textMap, let selection = lineSelection,
-              textMap.lines.indices.contains(selection.line) else { return }
-        let chars = textMap.lines[selection.line].chars
-        guard let first = chars.first, let last = chars.last, !chars.isEmpty else { return }
-        let startX = chars[min(selection.lower, chars.count - 1)].minX
-        let endX = chars[min(selection.upper, chars.count - 1)].maxX
+        guard let textMap, let selection, !textMap.isEmpty else { return }
+        let rows = textMap.rows(in: selection)
+        guard let first = rows.first, let last = rows.last,
+              let startRect = textMap.charRect(inLine: first.line, index: first.lower),
+              let endRect = textMap.charRect(inLine: last.line, index: last.upper) else { return }
         RuntimeDiagnostics.shared.log(
             "annotation",
-            String(format: "selection chars=%d…%d startX=%.2f endX=%.2f firstGlyphMinX=%.2f lastGlyphMaxX=%.2f lineHeight=%.2f",
-                   selection.start, selection.end, startX, endX,
-                   first.minX, last.maxX, textMap.lines[selection.line].lineHeight)
+            String(format: "selection rows=%d startX=%.2f endX=%.2f startRow=%d endRow=%d",
+                   rows.count, startRect.minX, endRect.maxX,
+                   first.line + 1, last.line + 1)
         )
     }
 
@@ -631,17 +626,30 @@ final class AnnotationCanvasView: UIView {
         endHandle.isHidden = true
     }
 
+    /// Where the two grab points sit: the start of the first selected row and
+    /// the end of the last one.
+    private func handleAnchors() -> (start: CGPoint, end: CGPoint)? {
+        if usesLineSnapping, let textMap, let selection,
+           let rows = textMap.rows(in: selection) as [PageLineSelection]?,
+           let first = rows.first, let last = rows.last,
+           let firstBox = textMap.charRect(inLine: first.line, index: first.lower),
+           let lastBox = textMap.charRect(inLine: last.line, index: last.upper) {
+            let start = content.convert(CGPoint(x: firstBox.minX, y: firstBox.midY), to: self)
+            let end = content.convert(CGPoint(x: lastBox.maxX, y: lastBox.midY), to: self)
+            return (start, end)
+        }
+        guard let rect = contentSelectionRect() else { return nil }
+        return (CGPoint(x: rect.minX, y: rect.midY), CGPoint(x: rect.maxX, y: rect.midY))
+    }
+
     func updateHandlePositions() {
-        guard !startHandle.isHidden, let contentRect = contentSelectionRect() else { return }
-        let canvasRect = content.convert(contentRect, to: self)
-        startHandle.center = CGPoint(x: canvasRect.minX, y: canvasRect.midY)
-        endHandle.center = CGPoint(x: canvasRect.maxX, y: canvasRect.midY)
-        let overlapping = canvasRect.width < SelectionHandleView.touchSize
+        guard !startHandle.isHidden, let anchors = handleAnchors() else { return }
+        startHandle.center = anchors.start
+        endHandle.center = anchors.end
+        let overlapping = abs(anchors.end.x - anchors.start.x) < SelectionHandleView.touchSize
         startHandle.clipsInnerHalf = overlapping
         endHandle.clipsInnerHalf = overlapping
     }
-
-    // MARK: - Action bar
 
     private func showActionBar() {
         guard contentSelectionRect() != nil else {
@@ -658,12 +666,12 @@ final class AnnotationCanvasView: UIView {
     }
 
     private func updateActionBarState() {
-        guard usesLineSnapping, let textMap, let lineSelection else {
+        guard usesLineSnapping, let textMap, let selection else {
             actionBar.update(canMoveUp: false, canMoveDown: false)
             return
         }
-        actionBar.update(canMoveUp: textMap.moved(lineSelection, by: -1) != nil,
-                         canMoveDown: textMap.moved(lineSelection, by: 1) != nil)
+        actionBar.update(canMoveUp: textMap.moved(selection, by: -1) != nil,
+                         canMoveDown: textMap.moved(selection, by: 1) != nil)
     }
 
     fileprivate func updateActionBarPosition() {
@@ -684,9 +692,9 @@ final class AnnotationCanvasView: UIView {
     /// Moves the active selection to the neighbouring row — instant, because it
     /// only re-indexes the cached map.
     private func moveSelection(by delta: Int) {
-        guard let textMap, let selection = lineSelection,
+        guard let textMap, let selection,
               let moved = textMap.moved(selection, by: delta) else { return }
-        lineSelection = moved
+        self.selection = moved
         renderThrottled(force: true)
         updateActionBarState()
         showHandles()
@@ -694,21 +702,36 @@ final class AnnotationCanvasView: UIView {
     }
 
     private func commitActiveSelection() {
-        guard let rect = annotationNormalisedRect else { return }
-        RuntimeDiagnostics.shared.log(
-            "annotation",
-            String(format: "commit kind=%@ normalised=(%.4f,%.4f,%.4f,%.4f)",
-                   kind.rawValue, rect.minX, rect.minY, rect.width, rect.height)
-        )
-        let item = PlacedAnnotation(kind: kind, rect: rect)
-        annotations.append(item)
+        let items = pendingAnnotations()
+        guard !items.isEmpty else { return }
+        for item in items {
+            RuntimeDiagnostics.shared.log(
+                "annotation",
+                String(format: "commit kind=%@ normalised=(%.4f,%.4f,%.4f,%.4f)",
+                       item.kind.rawValue, item.rect.minX, item.rect.minY,
+                       item.rect.width, item.rect.height)
+            )
+        }
+        annotations.append(contentsOf: items)
         drawCommitted()
-        onCommit?(item)
+        onCommit?(items)
         clearActiveSelection()
     }
 
+    /// One annotation per covered row for lines, markers and strikes; a single
+    /// oval around the whole block for a circle.
+    private func pendingAnnotations() -> [PlacedAnnotation] {
+        if usesLineSnapping, let textMap, let selection, let style = lineStyle {
+            return textMap.annotationRects(for: selection, style: style).map {
+                PlacedAnnotation(kind: kind, rect: textMap.normalised($0))
+            }
+        }
+        guard let rect = annotationNormalisedRect else { return [] }
+        return [PlacedAnnotation(kind: kind, rect: rect)]
+    }
+
     private func clearActiveSelection() {
-        lineSelection = nil
+        selection = nil
         rectSelection = nil
         dragAnchor = nil
         dragHandle = nil
@@ -721,74 +744,59 @@ final class AnnotationCanvasView: UIView {
 
     // MARK: - Rendering
 
-    /// What is written into the PDF. Row tools get their own rectangle per
-    /// tool (line under the text, line through the text, box around the row);
-    /// other tools write the drawn rectangle.
-    private var annotationNormalisedRect: CGRect? {
-        if usesLineSnapping, let textMap, let lineSelection,
-           let style = lineStyle,
-           let pageRect = textMap.annotationRect(for: lineSelection, style: style) {
-            return textMap.normalised(pageRect)
-        }
-        return normalisedSelection
-    }
-
     private var lineStyle: PageTextMap.LineStyle? {
         switch kind {
         case .underline: return .underline
         case .strikeOut: return .strikeThrough
         case .circle: return .circle
+        case .highlight: return .highlight
         default: return nil
         }
     }
 
-    private var normalisedSelection: CGRect? {
-        if usesLineSnapping, let textMap, let lineSelection,
-           let pageRect = textMap.rect(for: lineSelection) {
-            return textMap.normalised(pageRect)
+    /// What is shown while editing: one box per covered row, or the oval for a
+    /// circle. Matches what will be written into the PDF.
+    private func previewRects() -> [CGRect] {
+        if usesLineSnapping, let textMap, let selection {
+            switch kind {
+            case .circle:
+                if let box = textMap.annotationRects(for: selection, style: .circle).first {
+                    return [contentRect(from: box)]
+                }
+                return []
+            default:
+                return textMap.rowRects(for: selection).map { contentRect(from: $0) }
+            }
         }
+        guard let rectSelection else { return [] }
+        return [toolRect(from: contentRect(fromNormalised: rectSelection))]
+    }
+
+    private func contentSelectionRect() -> CGRect? {
+        let rects = previewRects()
+        guard let first = rects.first else { return nil }
+        return rects.dropFirst().reduce(first) { $0.union($1) }
+    }
+
+    /// Free-rectangle path (no text layer, or a square/comment tool).
+    private var annotationNormalisedRect: CGRect? {
         guard let rectSelection else { return nil }
         return normalise(toolRect(from: contentRect(fromNormalised: rectSelection)),
                          in: content.bounds.size)
     }
 
-    private func contentSelectionRect() -> CGRect? {
-        if usesLineSnapping, let textMap, let lineSelection,
-           let pageRect = textMap.rect(for: lineSelection) {
-            return contentRect(from: pageRect)
-        }
-        guard let rectSelection else { return nil }
-        return toolRect(from: contentRect(fromNormalised: rectSelection))
-    }
-
-    /// Without a text layer there is no baseline, so the drawn area stands in
-    /// for the row: the underline goes along its bottom edge, the strike-through
-    /// through its middle, and a circle keeps the whole box.
-    private func toolRect(from raw: CGRect) -> CGRect {
-        let thickness = max(content.bounds.height * 0.004, 2)
-        switch kind {
-        case .underline:
-            return CGRect(x: raw.minX, y: raw.maxY - thickness,
-                          width: raw.width, height: thickness)
-        case .strikeOut:
-            return CGRect(x: raw.minX, y: raw.midY - thickness / 2,
-                          width: raw.width, height: thickness)
-        default:
-            return raw
-        }
-    }
-
     private func renderSelection() {
-        guard let rect = contentSelectionRect() else {
-            if lastDrawnRect != .null {
-                selectionLayer.path = nil
-                lastDrawnRect = .null
-            }
+        let rects = previewRects()
+        guard !rects.isEmpty else {
+            selectionLayer.path = nil
             return
         }
-        guard rect != lastDrawnRect else { return }
-        lastDrawnRect = rect
-        selectionLayer.path = UIBezierPath(rect: rect).cgPath
+        let path = UIBezierPath()
+        let oval = usesLineSnapping && kind == .circle
+        for rect in rects {
+            path.append(oval ? UIBezierPath(ovalIn: rect) : UIBezierPath(rect: rect))
+        }
+        selectionLayer.path = path.cgPath
         // Keep the outline one physical pixel-ish wide at every zoom level.
         selectionLayer.lineWidth = max(1.5 / max(scrollView.zoomScale, 0.05), 0.4)
     }
@@ -832,7 +840,7 @@ extension PDFAnnotationKind {
     /// they are placed through `PageTextMap` instead of a free rectangle.
     var followsTextLines: Bool {
         switch self {
-        case .underline, .strikeOut, .circle: return true
+        case .underline, .strikeOut, .circle, .highlight: return true
         default: return false
         }
     }

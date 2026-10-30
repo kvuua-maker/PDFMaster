@@ -235,64 +235,113 @@ check(Set(heights.map { Int($0 * 1000) }).count == 1,
 
 // MARK: - Case 3: the start can be adjusted repeatedly without a reset
 
-if let base = map.selection(onLine: 1, fromX: row1.chars[10].minX, toX: row1.chars[30].maxX) {
-    var selection = base
-    var stable = true
-    for target in [3, 20, 6] {
-        selection = RowSelectionEditing.moving(.start,
-                                               toX: row1.chars[target].midX,
-                                               onRow: 1,
-                                               in: map,
-                                               selection: selection)
-        if selection.line != 1 || selection.start != target || selection.end != base.end { stable = false }
-    }
-    check(stable, "three start adjustments in a row keep the selection intact",
-          "final chars \(selection.start)…\(selection.end)")
-
-    var endSelection = base
-    var endStable = true
-    for target in [40, 33, 45] {
-        endSelection = RowSelectionEditing.moving(.end,
-                                                  toX: row1.chars[target].midX,
-                                                  onRow: 1,
-                                                  in: map,
-                                                  selection: endSelection)
-        if endSelection.end != target || endSelection.start != base.start { endStable = false }
-    }
-    check(endStable, "three end adjustments in a row keep the selection intact",
-          "final chars \(endSelection.start)…\(endSelection.end)")
-
-    // Which end a touch grabs: the nearer one.
-    check(RowSelectionEditing.nearestHandle(in: map, selection: base, atX: row1.chars[12].midX) == .start,
-          "a touch near the start grabs the start handle")
-    check(RowSelectionEditing.nearestHandle(in: map, selection: base, atX: row1.chars[28].midX) == .end,
-          "a touch near the end grabs the end handle")
+let base = PageTextSelection(anchorLine: 1, anchorChar: 10, focusLine: 1, focusChar: 30)
+var selection = base
+var stable = true
+for target in [3, 20, 6] {
+    selection = RowSelectionEditing.moving(.start,
+                                           toX: row1.chars[target].midX,
+                                           onRow: 1,
+                                           in: map,
+                                           selection: selection)
+    if selection.focusLine != 1 || selection.anchorChar != target || selection.focusChar != 30 { stable = false }
 }
+check(stable, "three start adjustments in a row keep the selection intact",
+      "anchor char \(selection.anchorChar), focus char \(selection.focusChar)")
+
+var endSelection = base
+var endStable = true
+for target in [40, 33, 45] {
+    endSelection = RowSelectionEditing.moving(.end,
+                                              toX: row1.chars[target].midX,
+                                              onRow: 1,
+                                              in: map,
+                                              selection: endSelection)
+    if endSelection.focusChar != target || endSelection.anchorChar != base.anchorChar { endStable = false }
+}
+check(endStable, "three end adjustments in a row keep the selection intact",
+      "anchor char \(endSelection.anchorChar), focus char \(endSelection.focusChar)")
+
+check(RowSelectionEditing.nearestHandle(in: map, selection: base, atX: row1.chars[12].midX) == .start,
+      "a touch near the start grabs the start handle")
+check(RowSelectionEditing.nearestHandle(in: map, selection: base, atX: row1.chars[28].midX) == .end,
+      "a touch near the end grabs the end handle")
 
 // MARK: - Case 4: taps extend the selection on the side they land
 
-if let base = map.selection(onLine: 1, fromX: row1.chars[10].minX, toX: row1.chars[20].maxX) {
-    let right = RowSelectionEditing.tap(at: CGPoint(x: row1.chars[35].midX, y: row1.rect.midY),
-                                        in: map, selection: base)
-    check(right.start == 10 && right.end == 35, "a tap to the right extends the end",
-          "chars \(right.start)…\(right.end)")
+let right = RowSelectionEditing.tap(at: CGPoint(x: row1.chars[35].midX, y: row1.rect.midY),
+                                    in: map, selection: base)
+check(right.anchorChar == 10 && right.focusChar == 35, "a tap to the right extends the end",
+      "chars \(right.anchorChar)…\(right.focusChar)")
 
-    let left = RowSelectionEditing.tap(at: CGPoint(x: row1.chars[3].midX, y: row1.rect.midY),
-                                       in: map, selection: right)
-    check(left.start == 3 && left.end == 35, "a tap to the left extends the start",
-          "chars \(left.start)…\(left.end)")
+let left = RowSelectionEditing.tap(at: CGPoint(x: row1.chars[3].midX, y: row1.rect.midY),
+                                   in: map, selection: right)
+check(left.anchorChar == 3 && left.focusChar == 35, "a tap to the left extends the start",
+      "chars \(left.anchorChar)…\(left.focusChar)")
 
-    let inside = RowSelectionEditing.tap(at: CGPoint(x: row1.chars[15].midX, y: row1.rect.midY),
-                                         in: map, selection: base)
-    check(inside.end == 20 && inside.start == 15, "a tap inside moves the nearer end",
-          "chars \(inside.start)…\(inside.end)")
+let inside = RowSelectionEditing.tap(at: CGPoint(x: row1.chars[15].midX, y: row1.rect.midY),
+                                     in: map, selection: base)
+check(inside.focusChar == 20 && inside.anchorChar == 15, "a tap inside moves the nearer end",
+      "chars \(inside.anchorChar)…\(inside.focusChar)")
+
+// MARK: - Multi-row selection (paragraph-like)
+
+let threeRows = PageTextSelection(anchorLine: 0, anchorChar: 5, focusLine: 2, focusChar: 12)
+let coveredRows = map.rows(in: threeRows)
+check(coveredRows.count == 3, "a drag across three rows covers three rows", "got \(coveredRows.count)")
+if coveredRows.count == 3 {
+    check(coveredRows[0].start == 5, "the first row starts at the anchor character", "start \(coveredRows[0].start)")
+    check(coveredRows[0].end == map.lines[0].chars.count - 1, "the first row runs to its end")
+    check(coveredRows[1].start == 0 && coveredRows[1].end == map.lines[1].chars.count - 1,
+          "the middle row is covered completely")
+    check(coveredRows[2].end == 12, "the last row ends at the focus character", "end \(coveredRows[2].end)")
+
+    if let block = map.boundingRect(for: threeRows) {
+        check(block.minY <= map.lines[0].rect.minY + 0.5 && block.maxY >= map.lines[2].rect.maxY - 0.5,
+              "the block bounding box covers all three rows")
+    }
+
+    // Underline and strike-through: one line per row, not one for the block.
+    let underlines = map.annotationRects(for: threeRows, style: .underline)
+    check(underlines.count == 3, "underline produces one line per row", "got \(underlines.count)")
+    let strikes = map.annotationRects(for: threeRows, style: .strikeThrough)
+    check(strikes.count == 3, "strike-through produces one line per row", "got \(strikes.count)")
+    if strikes.count == 3 {
+        check(strikes[1].midY > strikes[0].midY && strikes[2].midY > strikes[1].midY,
+              "each strike-through line sits on its own row")
+    }
+
+    // Marker: one band per row, each one line tall.
+    let highlights = map.annotationRects(for: threeRows, style: .highlight)
+    check(highlights.count == 3, "marker produces one band per row", "got \(highlights.count)")
+    if highlights.count == 3 {
+        check(abs(highlights[1].height - map.lines[1].lineHeight) < 0.01,
+              "each marker band is one line tall")
+    }
+
+    // Circle: a single oval around the whole block.
+    let ovals = map.annotationRects(for: threeRows, style: .circle)
+    check(ovals.count == 1, "circle produces one shape for the whole block", "got \(ovals.count)")
+    if let oval = ovals.first {
+        check(oval.contains(map.lines[0].rect) && oval.contains(map.lines[2].rect),
+              "the oval surrounds the first and the last row")
+        check(oval.height > map.lines[2].rect.maxY - map.lines[0].rect.minY,
+              "the oval is taller than the block itself (padding)")
+    }
+
+    // ↑ / ↓ move the whole block.
+    if let up = map.moved(threeRows, by: -1) {
+        check(up.firstLine == 0 && up.lastLine == 1, "↑ is clamped when the block does not fit")
+    } else {
+        check(true, "↑ is unavailable when the block starts at the first row")
+    }
 }
 
-// MARK: - Cases 5–6: Apply fixes the selection, Clear allows a fresh start
+// MARK: - Cases 5–6: Apply fixes the selection, Clear allows a fresh start// MARK: - Cases 5–6: Apply fixes the selection, Clear allows a fresh start
 
 var session = AnnotationSession<Int>()
-if let selection = map.selection(onLine: 1, fromX: row1.chars[4].minX, toX: row1.chars[18].maxX),
-   let rect = map.rect(for: selection) {
+if let single = map.selection(onLine: 1, fromX: row1.chars[4].minX, toX: row1.chars[18].maxX),
+   let rect = map.rect(for: single) {
     let normalised = map.normalised(rect)
     session.add(1)
     check(session.count == 1, "Apply puts the adjusted selection into the session")
@@ -387,7 +436,7 @@ for index in 0..<200 {
     guard let line = map.nearestLineIndex(atY: probeY) else { continue }
     let x = row0.rect.minX + CGFloat(index * 2)
     _ = RowSelectionEditing.moving(.end, toX: x, onRow: line, in: map,
-                                   selection: PageLineSelection(line: line, start: 0, end: 0))
+                                   selection: .single(line: line, char: 0))
 }
 let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
 check(PageTextMap.pdfCallCount == callsBefore,

@@ -12,6 +12,26 @@ struct PageLineSelection: Equatable {
     var upper: Int { max(start, end) }
 }
 
+/// A selection that may cover several rows, like a paragraph in a text editor.
+///
+/// `anchor` is where the finger landed, `focus` is where it is now; every row
+/// between them is covered, the first and last only partly.
+struct PageTextSelection: Equatable {
+    var anchorLine: Int
+    var anchorChar: Int
+    var focusLine: Int
+    var focusChar: Int
+
+    var firstLine: Int { min(anchorLine, focusLine) }
+    var lastLine: Int { max(anchorLine, focusLine) }
+    var isMultiLine: Bool { firstLine != lastLine }
+
+    static func single(line: Int, char: Int) -> PageTextSelection {
+        PageTextSelection(anchorLine: line, anchorChar: char,
+                          focusLine: line, focusChar: char)
+    }
+}
+
 /// Text geometry of a single PDF page, precomputed once.
 ///
 /// A row is modelled the way a typesetter sees it: a baseline plus a line box
@@ -345,8 +365,7 @@ struct PageTextMap {
         return PageLineSelection(line: line, start: start, end: end)
     }
 
-    /// Moves a selection by whole rows (the ↑/↓ buttons). Returns nil at the
-    /// first or last row, which is also what disables those buttons.
+    /// Moves a single-row selection by whole rows.
     func moved(_ selection: PageLineSelection, by delta: Int) -> PageLineSelection? {
         let target = selection.line + delta
         guard lines.indices.contains(target) else { return nil }
@@ -385,6 +404,7 @@ struct PageTextMap {
         case underline
         case strikeThrough
         case circle
+        case highlight
     }
 
     /// Rectangle handed to the PDF engine for a row selection.
@@ -419,7 +439,106 @@ struct PageTextMap {
         case .circle:
             let top = baseline - lineHeight * 0.8
             return CGRect(x: box.minX, y: top, width: width, height: lineHeight)
+        case .highlight:
+            return box
         }
+    }
+
+    // MARK: - Multi-row selections
+
+    /// Endpoints in document order (top-left first).
+    func orderedEnds(of selection: PageTextSelection) -> (startLine: Int, startChar: Int,
+                                                        endLine: Int, endChar: Int) {
+        var start = (selection.anchorLine, selection.anchorChar)
+        var end = (selection.focusLine, selection.focusChar)
+        if start.0 > end.0 || (start.0 == end.0 && start.1 > end.1) {
+            swap(&start, &end)
+        }
+        return (start.0, start.1, end.0, end.1)
+    }
+
+    /// One range per covered row: the first row starts at the start character,
+    /// the last ends at the end character, and rows in between are full width.
+    func rows(in selection: PageTextSelection) -> [PageLineSelection] {
+        guard !lines.isEmpty else { return [] }
+        let ends = orderedEnds(of: selection)
+        let first = min(max(ends.startLine, 0), lines.count - 1)
+        let last = min(max(ends.endLine, 0), lines.count - 1)
+        var result: [PageLineSelection] = []
+        for row in first...last {
+            let chars = lines[row].chars
+            guard !chars.isEmpty else { continue }
+            var start = row == first ? ends.startChar : 0
+            var end = row == last ? ends.endChar : chars.count - 1
+            start = min(max(start, 0), chars.count - 1)
+            end = min(max(end, 0), chars.count - 1)
+            if start > end { swap(&start, &end) }
+            result.append(PageLineSelection(line: row, start: start, end: end))
+        }
+        return result
+    }
+
+    /// One box per covered row (full line height), used by the marker tool and
+    /// by the on-screen preview.
+    func rowRects(for selection: PageTextSelection) -> [CGRect] {
+        rows(in: selection).compactMap { rect(for: $0) }
+    }
+
+    /// Bounding box of every covered row — the circle is drawn around it.
+    func boundingRect(for selection: PageTextSelection) -> CGRect? {
+        let rects = rowRects(for: selection)
+        guard let first = rects.first else { return nil }
+        return rects.dropFirst().reduce(first) { $0.union($1) }
+    }
+
+    /// What is written into the PDF: one thin line per row for underline and
+    /// strike-through, one rectangle per row for the marker, one oval around
+    /// the whole block for a circle.
+    func annotationRects(for selection: PageTextSelection, style: LineStyle) -> [CGRect] {
+        switch style {
+        case .underline, .strikeThrough:
+            return rows(in: selection).compactMap { annotationRect(for: $0, style: style) }
+        case .highlight:
+            return rowRects(for: selection)
+        case .circle:
+            guard let box = boundingRect(for: selection) else { return [] }
+            let padding: CGFloat = 2.5
+            return [box.insetBy(dx: -padding, dy: -padding)]
+        }
+    }
+
+    /// Moves a whole (possibly multi-row) selection by rows.
+    func moved(_ selection: PageTextSelection, by delta: Int) -> PageTextSelection? {
+        let ends = orderedEnds(of: selection)
+        let newStart = ends.startLine + delta
+        let newEnd = ends.endLine + delta
+        guard lines.indices.contains(newStart), lines.indices.contains(newEnd) else { return nil }
+        let startChar = min(ends.startChar, max(lines[newStart].chars.count - 1, 0))
+        let endChar = min(ends.endChar, max(lines[newEnd].chars.count - 1, 0))
+        return PageTextSelection(anchorLine: newStart, anchorChar: startChar,
+                                 focusLine: newEnd, focusChar: endChar)
+    }
+
+    /// Clamps both endpoints into the page's rows.
+    func clamped(_ selection: PageTextSelection) -> PageTextSelection {
+        guard !lines.isEmpty else { return selection }
+        let anchorLine = min(max(selection.anchorLine, 0), lines.count - 1)
+        let focusLine = min(max(selection.focusLine, 0), lines.count - 1)
+        let anchorChar = min(max(selection.anchorChar, 0),
+                             max(lines[anchorLine].chars.count - 1, 0))
+        let focusChar = min(max(selection.focusChar, 0),
+                            max(lines[focusLine].chars.count - 1, 0))
+        return PageTextSelection(anchorLine: anchorLine, anchorChar: anchorChar,
+                                 focusLine: focusLine, focusChar: focusChar)
+    }
+
+    /// Box of a single character, used by the selection handles.
+    func charRect(inLine line: Int, index: Int) -> CGRect? {
+        guard lines.indices.contains(line) else { return nil }
+        let chars = lines[line].chars
+        guard !chars.isEmpty else { return nil }
+        let clamped = min(max(index, 0), chars.count - 1)
+        return rect(for: PageLineSelection(line: line, start: clamped, end: clamped))
     }
 
     /// Page points → 0…1 with a top-left origin (what the PDF engine takes).

@@ -45,7 +45,7 @@ struct AnnotationPlacementView: View {
                              kind: kind,
                              textMap: textMap,
                              annotations: session.drawn,
-                             onCommit: { session.add($0) })
+                             onCommit: { session.add(contentsOf: $0) })
                 .ignoresSafeArea(edges: .bottom)
         } else {
             Text(PDFL10n.t("Немає сторінки для анотації"))
@@ -123,12 +123,12 @@ private struct AnnotationCanvas: UIViewRepresentable {
     let kind: PDFAnnotationKind
     let textMap: PageTextMap?
     let annotations: [PlacedAnnotation]
-    let onCommit: (PlacedAnnotation) -> Void
+    let onCommit: ([PlacedAnnotation]) -> Void
 
     func makeUIView(context: Context) -> AnnotationCanvasView {
         let view = AnnotationCanvasView(image: image, kind: kind, textMap: textMap)
         let coordinator = context.coordinator
-        view.onCommit = { item in coordinator.parent.onCommit(item) }
+        view.onCommit = { items in coordinator.parent.onCommit(items) }
         return view
     }
 
