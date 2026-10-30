@@ -91,20 +91,22 @@ struct PageTextMap {
         // boxes overlap vertically.
         boxes.sort { $0.maxY < $1.maxY }
         var clusters: [[CGRect]] = []
-        var baseline: CGFloat = 0
-        var clusterHeight: CGFloat = 0
+        var previousBottom: CGFloat = 0
+        var previousHeight: CGFloat = 0
         for box in boxes {
-            let joins = !clusters.isEmpty
-                && abs(box.maxY - baseline) <= max(clusterHeight * 0.45, 2)
+            // Chain glyphs by their bottoms. The window is relative to the
+            // taller of the two glyphs, so a small raised quote (its bottom a
+            // few points above the baseline) still joins the row it belongs to
+            // instead of becoming a row of its own.
+            let window = max(max(previousHeight, box.height) * 0.6, 2.5)
+            let joins = !clusters.isEmpty && abs(box.maxY - previousBottom) <= window
             if joins {
                 clusters[clusters.count - 1].append(box)
-                baseline = min(baseline, box.maxY)
-                clusterHeight = max(clusterHeight, box.height)
             } else {
                 clusters.append([box])
-                baseline = box.maxY
-                clusterHeight = box.height
             }
+            previousBottom = box.maxY
+            previousHeight = box.height
         }
 
         var raw: [(rect: CGRect, baseline: CGFloat, chars: [CGRect])] = []

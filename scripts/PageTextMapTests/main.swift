@@ -147,8 +147,8 @@ if let strike = map.annotationRect(for: fullRow, style: .strikeThrough) {
 if let circle = map.annotationRect(for: fullRow, style: .circle) {
     check(circle.contains(row1.rect), "circle surrounds the whole row",
           String(format: "%.1fx%.1f vs row %.1fx%.1f", circle.width, circle.height, row1.rect.width, row1.rect.height))
-    check(circle.width > row1.rect.width + 4 && circle.height > row1.rect.height + 4,
-          "circle has a visible padding")
+    check(abs(circle.height - row1.lineHeight) < 0.01,
+          "circle is exactly one line box tall", String(format: "%.2f pt", circle.height))
     check(!circle.intersects(row0.rect) && !circle.intersects(row2.rect),
           "circle does not touch the neighbouring rows")
 }
