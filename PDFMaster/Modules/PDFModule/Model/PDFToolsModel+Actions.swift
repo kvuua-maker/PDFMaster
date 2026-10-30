@@ -75,11 +75,29 @@ extension PDFToolsModel {
         guard let url = results.first else { return }
         let kind = placementKind
         run { Optional(try await PDFToolsEngine.shared.addAnnotation(url, kind: kind, normalizedRect: rect)) }
+        // The cover keeps drawing its content while it animates out; release the
+        // rendered page only after that finishes.
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            placementImage = nil
+        }
     }
 
     func startPlacement(_ kind: PDFAnnotationKind) {
         placementKind = kind
+        // A wider render keeps small text readable once the page is zoomed in;
+        // it is produced once here instead of on every sheet update.
+        if let url = results.first {
+            placementImage = PDFToolsEngine.shared.pageImageSync(url, maxWidth: 1600)
+        } else {
+            placementImage = nil
+        }
         showPlacement = true
+    }
+
+    func cancelPlacement() {
+        showPlacement = false
+        placementImage = nil
     }
 
     func deleteRangePages() {

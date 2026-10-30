@@ -816,11 +816,14 @@ extension PDFToolsEngine {
         PDFDocument(url: url)?.pageCount ?? 1
     }
 
-    nonisolated func pageImageSync(_ url: URL) -> UIImage? {
+    /// Page 1 as a bitmap. Annotation placement asks for a wider render so the
+    /// page stays legible when it is zoomed in.
+    nonisolated func pageImageSync(_ url: URL, maxWidth: CGFloat = 900) -> UIImage? {
         guard let document = PDFDocument(url: url), let page = document.page(at: 0) else { return nil }
         let bounds = page.bounds(for: .mediaBox)
-        let scale: CGFloat = 900 / max(bounds.width, 1)
-        return page.thumbnail(of: CGSize(width: 900, height: bounds.height * scale), for: .mediaBox)
+        let width = max(maxWidth, 200)
+        let scale: CGFloat = width / max(bounds.width, 1)
+        return page.thumbnail(of: CGSize(width: width, height: bounds.height * scale), for: .mediaBox)
     }
 
     nonisolated func annotationsSync(_ url: URL) -> [AnnotationBox] {

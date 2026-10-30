@@ -76,10 +76,10 @@ private struct PDFToolsBindings: ViewModifier {
                 }
             }
             .fullScreenCover(isPresented: $model.showPlacement) {
-                AnnotationPlacementView(image: model.signatureBackground(), kind: model.placementKind) { rect in
+                AnnotationPlacementView(image: model.placementImage, kind: model.placementKind) { rect in
                     model.placeAnnotation(rect)
                 } onCancel: {
-                    model.showPlacement = false
+                    model.cancelPlacement()
                 }
             }
             .sheet(isPresented: $model.showViewer) {
