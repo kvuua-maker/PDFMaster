@@ -87,57 +87,22 @@ struct PageTextMap {
         }
         guard !boxes.isEmpty else { return nil }
 
-        // Group glyphs by baseline, so rows can never merge because their glyph
-        // boxes overlap vertically.
-        boxes.sort { $0.maxY < $1.maxY }
-        var clusters: [[CGRect]] = []
-        var previousBottom: CGFloat = 0
-        var previousHeight: CGFloat = 0
-        for box in boxes {
-            // Chain glyphs by their bottoms. The window is relative to the
-            // taller of the two glyphs, so a small raised quote (its bottom a
-            // few points above the baseline) still joins the row it belongs to
-            // instead of becoming a row of its own.
-            let window = max(max(previousHeight, box.height) * 0.6, 2.5)
-            let joins = !clusters.isEmpty && abs(box.maxY - previousBottom) <= window
-            if joins {
-                clusters[clusters.count - 1].append(box)
-            } else {
-                clusters.append([box])
-            }
-            previousBottom = box.maxY
-            previousHeight = box.height
-        }
-
-        var raw: [(rect: CGRect, baseline: CGFloat, chars: [CGRect])] = []
-        raw.reserveCapacity(clusters.count)
-        for cluster in clusters {
-            let sorted = cluster.sorted { $0.minX < $1.minX }
-            let rect = sorted.reduce(CGRect.null) { $0.union($1) }
-            guard rect.width > 1, rect.height > 1 else { continue }
-            // Baseline = the most common glyph bottom. Raised glyphs (quotes,
-            // apostrophes, asterisks, superscripts) have their bottom above the
-            // baseline; taking the minimum dragged the whole line up by 3–6 pt,
-            // which is why an underline landed on the text and a strike-through
-            // landed above it on real letters full of quotes.
-            let bottoms = sorted.map(\.maxY).sorted()
-            let median = bottoms.isEmpty ? rect.maxY : bottoms[bottoms.count / 2]
-            let inliers = bottoms.filter { abs($0 - median) <= 1.5 }
-            let rowBaseline = inliers.isEmpty
-                ? median
-                : inliers.reduce(0, +) / CGFloat(inliers.count)
-            raw.append((rect, rowBaseline, sorted))
-        }
-        guard !raw.isEmpty else { return nil }
-        raw.sort { $0.baseline < $1.baseline }
+        // PDFKit already knows how the text is laid out: its line selections
+        // follow the actual text runs, so quotes, superscripts and mixed fonts
+        // stay on the row they belong to. Glyph clustering is only the fallback
+        // for pages where PDFKit returns no lines.
+        var rows = rowsFromLines(page: page, media: media, boxes: boxes)
+            ?? rowsFromClustering(boxes)
+        guard !rows.isEmpty else { return nil }
+        rows.sort { $0.rect.minY < $1.rect.minY }
 
         var lines: [Line] = []
-        lines.reserveCapacity(raw.count)
-        for (index, row) in raw.enumerated() {
+        lines.reserveCapacity(rows.count)
+        for (index, row) in rows.enumerated() {
             // Actual spacing to the neighbour: the line box may not grow past
             // it, otherwise two rows could claim the same point.
-            let next = index + 1 < raw.count ? raw[index + 1].baseline - row.baseline : nil
-            let previous = index > 0 ? row.baseline - raw[index - 1].baseline : nil
+            let next = index + 1 < rows.count ? rows[index + 1].baseline - row.baseline : nil
+            let previous = index > 0 ? row.baseline - rows[index - 1].baseline : nil
             let spacing = next ?? previous ?? 0
             // Font size from the row's ascenders: the tallest glyph above the
             // baseline is a cap or an ascender, about 0.72 em.
@@ -156,6 +121,106 @@ struct PageTextMap {
         }
         return PageTextMap(pageSize: CGSize(width: media.width, height: media.height),
                            lines: lines)
+    }
+
+    private struct RawRow {
+        var rect: CGRect
+        var baseline: CGFloat
+        var chars: [CGRect]
+    }
+
+    /// Rows taken from PDFKit's own line selections.
+    private static func rowsFromLines(page: PDFPage,
+                                      media: CGRect,
+                                      boxes: [CGRect]) -> [RawRow]? {
+        guard let pageSelection = page.selection(for: media) else { return nil }
+        var lineRects: [CGRect] = []
+        for selection in pageSelection.selectionsByLine() {
+            let bounds = selection.bounds(for: page)
+            guard bounds.width > 1, bounds.height > 0.5 else { continue }
+            lineRects.append(CGRect(x: bounds.minX - media.minX,
+                                    y: media.maxY - bounds.maxY,
+                                    width: bounds.width,
+                                    height: bounds.height))
+        }
+        guard !lineRects.isEmpty else { return nil }
+
+        // One visual row can arrive as several fragments (bold + regular runs);
+        // merge fragments that overlap vertically.
+        lineRects.sort { $0.minY < $1.minY }
+        var merged: [CGRect] = []
+        for rect in lineRects {
+            if let last = merged.last {
+                let overlap = min(last.maxY, rect.maxY) - max(last.minY, rect.minY)
+                if overlap > 0.6 * min(last.height, rect.height) {
+                    merged[merged.count - 1] = last.union(rect)
+                    continue
+                }
+            }
+            merged.append(rect)
+        }
+
+        var rows = merged.map { RawRow(rect: $0, baseline: $0.maxY, chars: []) }
+        for box in boxes {
+            var bestIndex = -1
+            var bestOverlap: CGFloat = 0
+            for (index, row) in rows.enumerated() {
+                let overlap = min(box.maxY, row.rect.maxY) - max(box.minY, row.rect.minY)
+                if overlap > bestOverlap {
+                    bestOverlap = overlap
+                    bestIndex = index
+                }
+            }
+            guard bestIndex >= 0 else { continue }
+            rows[bestIndex].chars.append(box)
+        }
+        rows = rows.filter { $0.chars.count > 0 }
+        guard !rows.isEmpty else { return nil }
+        for index in rows.indices {
+            rows[index].chars.sort { $0.minX < $1.minX }
+            rows[index].rect = rows[index].chars.reduce(CGRect.null) { $0.union($1) }
+            rows[index].baseline = baseline(of: rows[index].chars, fallback: rows[index].rect.maxY)
+        }
+        return rows
+    }
+
+    /// Fallback: chain glyphs by their bottoms. Quotes and superscripts sit a
+    /// few points above the baseline, so the window follows the taller glyph.
+    private static func rowsFromClustering(_ boxes: [CGRect]) -> [RawRow] {
+        let sorted = boxes.sorted { $0.maxY < $1.maxY }
+        var clusters: [[CGRect]] = []
+        var previousBottom: CGFloat = 0
+        var previousHeight: CGFloat = 0
+        for box in sorted {
+            let window = max(max(previousHeight, box.height) * 0.6, 2.5)
+            if !clusters.isEmpty, abs(box.maxY - previousBottom) <= window {
+                clusters[clusters.count - 1].append(box)
+            } else {
+                clusters.append([box])
+            }
+            previousBottom = box.maxY
+            previousHeight = box.height
+        }
+        return clusters.compactMap { cluster in
+            let sorted = cluster.sorted { $0.minX < $1.minX }
+            let rect = sorted.reduce(CGRect.null) { $0.union($1) }
+            guard rect.width > 1, rect.height > 1 else { return nil }
+            return RawRow(rect: rect,
+                          baseline: baseline(of: sorted, fallback: rect.maxY),
+                          chars: sorted)
+        }
+    }
+
+    /// Baseline = the most common glyph bottom. Raised glyphs (quotes,
+    /// apostrophes, asterisks, superscripts) have their bottom above the
+    /// baseline; taking the minimum dragged a whole row up by 3–6 pt, which is
+    /// why an underline landed on the text and a strike-through above it.
+    private static func baseline(of chars: [CGRect], fallback: CGFloat) -> CGFloat {
+        let bottoms = chars.map(\.maxY).sorted()
+        guard let median = bottoms.isEmpty ? nil : bottoms[bottoms.count / 2] else { return fallback }
+        let inliers = bottoms.filter { abs($0 - median) <= 1.5 }
+        guard !inliers.isEmpty else { return median }
+        return inliers.reduce(0, +) / CGFloat(inliers.count)
     }
 
     // MARK: - Coordinates
