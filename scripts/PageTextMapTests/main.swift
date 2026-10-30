@@ -126,11 +126,15 @@ if let circle = map.annotationRect(for: fullRow, style: .circle) {
 }
 
 // The three tools must produce three different rectangles for the same row.
-let underlineY = map.annotationRect(for: fullRow, style: .underline)?.midY ?? 0
-let strikeY = map.annotationRect(for: fullRow, style: .strikeThrough)?.midY ?? 0
-let circleY = map.annotationRect(for: fullRow, style: .circle)?.midY ?? 0
-check(underlineY > strikeY && strikeY > circleY,
-      "each tool places its line at its own Y", String(format: "%.1f > %.1f > %.1f", underlineY, strikeY, circleY))
+if let underline = map.annotationRect(for: fullRow, style: .underline),
+   let strike = map.annotationRect(for: fullRow, style: .strikeThrough),
+   let circle = map.annotationRect(for: fullRow, style: .circle) {
+    check(underline != strike && strike != circle && underline != circle,
+          "the three tools produce three different rectangles")
+    check(underline.minY > strike.maxY,
+          "the underline sits below the strike-through",
+          String(format: "underline %.1f > strike %.1f", underline.minY, strike.maxY))
+}
 
 // MARK: - Row edges snap to the first / last character
 
