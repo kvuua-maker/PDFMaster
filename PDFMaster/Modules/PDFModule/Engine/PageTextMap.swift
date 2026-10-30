@@ -127,11 +127,10 @@ struct PageTextMap {
             let next = index + 1 < raw.count ? raw[index + 1].baseline - row.baseline : nil
             let previous = index > 0 ? row.baseline - raw[index - 1].baseline : nil
             let spacing = next ?? previous ?? 0
-            // Font size from the row's glyphs: a typical Latin glyph box is
-            // about 0.72 em tall.
-            let heights = row.chars.map(\.height).sorted()
-            let medianHeight = heights[heights.count / 2]
-            let fontSize = max(medianHeight / 0.72, 4)
+            // Font size from the row's ascenders: the tallest glyph above the
+            // baseline is a cap or an ascender, about 0.72 em.
+            let ascent = max(row.baseline - row.rect.minY, 1)
+            let fontSize = max(ascent / 0.72, 4)
             var lineHeight = fontSize * 1.2
             if spacing > 2 {
                 lineHeight = min(lineHeight, spacing * 0.95)
@@ -172,26 +171,26 @@ struct PageTextMap {
     /// Points further away belong to no row at all.
     func lineIndex(atY y: CGFloat) -> Int? {
         guard !lines.isEmpty else { return nil }
-        var closest = 0
-        var closestDistance = CGFloat.greatestFiniteMagnitude
+        var best: (index: Int, outside: CGFloat, baseline: CGFloat)?
         for (index, line) in lines.enumerated() {
-            let distance = abs(y - line.baselineY)
-            if distance < closestDistance {
-                closestDistance = distance
-                closest = index
+            let band = line.band
+            let outside: CGFloat
+            if y < band.minY {
+                outside = band.minY - y
+            } else if y > band.maxY {
+                outside = y - band.maxY
+            } else {
+                outside = 0
+            }
+            guard outside <= Self.tolerance(lineHeight: line.lineHeight) else { continue }
+            let baselineDistance = abs(y - line.baselineY)
+            if best == nil
+                || outside < best!.outside
+                || (outside == best!.outside && baselineDistance < best!.baseline) {
+                best = (index, outside, baselineDistance)
             }
         }
-        let line = lines[closest]
-        let band = line.band
-        let outside: CGFloat
-        if y < band.minY {
-            outside = band.minY - y
-        } else if y > band.maxY {
-            outside = y - band.maxY
-        } else {
-            outside = 0
-        }
-        return outside <= Self.tolerance(lineHeight: line.lineHeight) ? closest : nil
+        return best?.index
     }
 
     /// Closest baseline regardless of distance — used while dragging a handle,
