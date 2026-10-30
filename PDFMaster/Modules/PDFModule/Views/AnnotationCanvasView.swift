@@ -420,6 +420,9 @@ final class AnnotationCanvasView: UIView {
         let canvasRect = content.convert(contentRect, to: self)
         startHandle.center = CGPoint(x: canvasRect.minX, y: canvasRect.midY)
         endHandle.center = CGPoint(x: canvasRect.maxX, y: canvasRect.midY)
+        let overlapping = canvasRect.width < SelectionHandleView.touchSize
+        startHandle.clipsInnerHalf = overlapping
+        endHandle.clipsInnerHalf = overlapping
     }
 
     // MARK: - Rendering

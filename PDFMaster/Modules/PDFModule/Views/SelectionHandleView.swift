@@ -10,8 +10,15 @@ final class SelectionHandleView: UIView {
 
     private let dot = UIView()
     private let ring = UIView()
+    private let isStartHandle: Bool
+
+    /// Set when the two handles are closer together than one touch target. The
+    /// handle then only accepts touches on its outward half so the inner one
+    /// stays reachable instead of being covered by its neighbour.
+    var clipsInnerHalf = false
 
     init(isStart: Bool) {
+        self.isStartHandle = isStart
         super.init(frame: CGRect(x: 0, y: 0, width: Self.touchSize, height: Self.touchSize))
         backgroundColor = .clear
         isOpaque = false
@@ -49,5 +56,11 @@ final class SelectionHandleView: UIView {
 
     func setColor(_ color: UIColor) {
         dot.backgroundColor = color
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard bounds.contains(point) else { return false }
+        guard clipsInnerHalf else { return true }
+        return isStartHandle ? point.x <= bounds.midX : point.x >= bounds.midX
     }
 }
