@@ -23,6 +23,7 @@ final class AnnotationCanvasView: UIView {
 
     private let imageView = UIImageView()
     private let selectionLayer = CAShapeLayer()
+    private let targetLineLayer = CAShapeLayer()
     private let zoomDelegate = CanvasZoomDelegate()
     private let drawGesture = UIPanGestureRecognizer()
     private let wordTap = UITapGestureRecognizer()
@@ -97,6 +98,12 @@ final class AnnotationCanvasView: UIView {
         selectionLayer.lineWidth = 2
         content.layer.addSublayer(selectionLayer)
 
+        targetLineLayer.frame = content.bounds
+        targetLineLayer.fillColor = kind.color.withAlphaComponent(0.14).cgColor
+        targetLineLayer.strokeColor = UIColor.clear.cgColor
+        targetLineLayer.isHidden = true
+        content.layer.insertSublayer(targetLineLayer, below: selectionLayer)
+
         drawGesture.addTarget(self, action: #selector(handleDraw(_:)))
         drawGesture.maximumNumberOfTouches = 1
         content.addGestureRecognizer(drawGesture)
@@ -123,6 +130,7 @@ final class AnnotationCanvasView: UIView {
         kind = newKind
         selectionLayer.fillColor = newKind.color.withAlphaComponent(0.22).cgColor
         selectionLayer.strokeColor = newKind.color.cgColor
+        targetLineLayer.fillColor = newKind.color.withAlphaComponent(0.14).cgColor
         startHandle.setColor(newKind.color)
         endHandle.setColor(newKind.color)
         if wasLineTool != usesLineSnapping {
@@ -261,6 +269,7 @@ final class AnnotationCanvasView: UIView {
         switch gesture.state {
         case .began:
             hideHandles()
+            hideTargetLine()
             guard let line = textMap.lineIndex(atY: point.y, tolerance: toleranceForZoom()) else {
                 // No row under the finger: show nothing rather than a box the
                 // user did not ask for.
@@ -356,11 +365,13 @@ final class AnnotationCanvasView: UIView {
                 swap(&candidate.start, &candidate.end)
             }
             lineSelection = candidate
+            showTargetLine(line)
             // The layer path is throttled; the handle itself follows every
             // event so the dot never feels laggy under the finger.
             renderThrottled()
             updateHandlePositions()
         case .ended, .cancelled, .failed:
+            hideTargetLine()
             committedLine = lineSelection
             renderThrottled(force: true)
             showHandles()
@@ -368,6 +379,25 @@ final class AnnotationCanvasView: UIView {
         default:
             break
         }
+    }
+
+    /// Highlights the row the handle is currently snapping to.
+    private func showTargetLine(_ index: Int) {
+        guard let textMap, textMap.lines.indices.contains(index) else {
+            hideTargetLine()
+            return
+        }
+        let zoom = max(scrollView.zoomScale, 0.1)
+        let rowRect = contentRect(from: textMap.lines[index].rect)
+        let padded = rowRect.insetBy(dx: -4 / zoom, dy: -1.5 / zoom)
+        targetLineLayer.path = UIBezierPath(roundedRect: padded,
+                                            cornerRadius: 3 / zoom).cgPath
+        targetLineLayer.isHidden = false
+    }
+
+    private func hideTargetLine() {
+        targetLineLayer.isHidden = true
+        targetLineLayer.path = nil
     }
 
     private func showHandles() {

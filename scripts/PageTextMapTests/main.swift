@@ -137,10 +137,13 @@ if let word = map.wordSelection(at: CGPoint(x: row0.minX + 10, y: row0.midY), to
 }
 
 // The gesture path must be arithmetic only: 20k hit tests should be trivial.
+let indexSpan = max(Int(row2.maxY - row0.minY), 1)
 let started = CFAbsoluteTimeGetCurrent()
 var hits = 0
 for index in 0..<20_000 {
-    let y = CGFloat(620 + (index % 90))
+    // Sweep the band that actually holds the three rows, so the loop measures
+    // real hits rather than a run over empty space.
+    let y = row0.minY + CGFloat(index % indexSpan)
     if map.lineIndex(atY: y, tolerance: tolerance3x) != nil { hits += 1 }
 }
 let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
