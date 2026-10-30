@@ -813,6 +813,23 @@ final class AnnotationCanvasView: UIView {
 
     // MARK: - Geometry for rectangle tools
 
+    /// Without a text layer there is no baseline, so the drawn area stands in
+    /// for the row: the underline runs along its bottom edge, the strike-through
+    /// through its middle, and a circle keeps the whole box.
+    private func toolRect(from raw: CGRect) -> CGRect {
+        let thickness = max(content.bounds.height * 0.004, 2)
+        switch kind {
+        case .underline:
+            return CGRect(x: raw.minX, y: raw.maxY - thickness,
+                          width: raw.width, height: thickness)
+        case .strikeOut:
+            return CGRect(x: raw.minX, y: raw.midY - thickness / 2,
+                          width: raw.width, height: thickness)
+        default:
+            return raw
+        }
+    }
+
     private func makeRectSelection(from start: CGPoint, to end: CGPoint) -> CGRect {
         let size = content.bounds.size
         guard size.width > 1, size.height > 1 else { return .zero }
