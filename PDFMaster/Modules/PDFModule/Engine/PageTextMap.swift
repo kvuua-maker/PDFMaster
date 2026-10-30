@@ -113,7 +113,17 @@ struct PageTextMap {
             let sorted = cluster.sorted { $0.minX < $1.minX }
             let rect = sorted.reduce(CGRect.null) { $0.union($1) }
             guard rect.width > 1, rect.height > 1 else { continue }
-            let rowBaseline = sorted.map(\.maxY).min() ?? rect.maxY
+            // Baseline = the most common glyph bottom. Raised glyphs (quotes,
+            // apostrophes, asterisks, superscripts) have their bottom above the
+            // baseline; taking the minimum dragged the whole line up by 3–6 pt,
+            // which is why an underline landed on the text and a strike-through
+            // landed above it on real letters full of quotes.
+            let bottoms = sorted.map(\.maxY).sorted()
+            let median = bottoms.isEmpty ? rect.maxY : bottoms[bottoms.count / 2]
+            let inliers = bottoms.filter { abs($0 - median) <= 1.5 }
+            let rowBaseline = inliers.isEmpty
+                ? median
+                : inliers.reduce(0, +) / CGFloat(inliers.count)
             raw.append((rect, rowBaseline, sorted))
         }
         guard !raw.isEmpty else { return nil }
@@ -323,25 +333,25 @@ struct PageTextMap {
               let box = rect(for: selection) else { return nil }
         let line = lines[selection.line]
         let baseline = line.baselineY
-        let height = line.lineHeight
-        let thickness = max(height * 0.08, 1.5)
+        let fontSize = line.fontSize
+        let lineHeight = line.lineHeight
         let width = max(box.width, 1)
+        // A 1–2 pt band centred on the target Y: PDFKit paints an underline at
+        // the bottom of its bounds and a strike-through through the middle, and
+        // with a band this thin either choice lands within ~1 pt of the target.
+        let thickness = max(fontSize * 0.1, 1.5)
         switch style {
         case .underline:
-            // The band starts 1.5 pt under the baseline; PDFKit paints the
-            // underline along the bottom of the band.
-            let top = baseline + max(1.5, height * 0.09)
-            return CGRect(x: box.minX, y: top, width: width, height: thickness)
+            let y = baseline + fontSize * 0.15
+            return CGRect(x: box.minX, y: y - thickness / 2,
+                          width: width, height: thickness)
         case .strikeThrough:
-            let centre = baseline - height * 0.3
-            return CGRect(x: box.minX, y: centre - thickness / 2,
+            let y = baseline - lineHeight * 0.3
+            return CGRect(x: box.minX, y: y - thickness / 2,
                           width: width, height: thickness)
         case .circle:
-            let padding: CGFloat = max(height * 0.15, 2.5)
-            let top = baseline - height * 0.8 - padding
-            return CGRect(x: box.minX - padding, y: top,
-                          width: width + padding * 2,
-                          height: height + padding * 2)
+            let top = baseline - lineHeight * 0.8
+            return CGRect(x: box.minX, y: top, width: width, height: lineHeight)
         }
     }
 

@@ -25,7 +25,7 @@ final class SelectionHandleView: UIView {
         // Handles are only meaningful once a selection exists.
         isHidden = true
 
-        let diameter: CGFloat = 18
+        let diameter: CGFloat = 26
         ring.frame = CGRect(x: (Self.touchSize - diameter) / 2,
                             y: (Self.touchSize - diameter) / 2,
                             width: diameter, height: diameter)
@@ -33,12 +33,14 @@ final class SelectionHandleView: UIView {
         ring.backgroundColor = .white
         ring.layer.shadowColor = UIColor.black.cgColor
         ring.layer.shadowOpacity = 0.25
-        ring.layer.shadowRadius = 3
+        ring.layer.shadowRadius = 4
         ring.layer.shadowOffset = CGSize(width: 0, height: 1)
+        ring.layer.borderWidth = 2
+        ring.layer.borderColor = UIColor.systemBackground.withAlphaComponent(0.9).cgColor
         ring.isUserInteractionEnabled = false
         addSubview(ring)
 
-        let inner: CGFloat = 10
+        let inner: CGFloat = 18
         dot.frame = CGRect(x: (Self.touchSize - inner) / 2,
                            y: (Self.touchSize - inner) / 2,
                            width: inner, height: inner)

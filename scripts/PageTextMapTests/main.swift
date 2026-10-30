@@ -92,6 +92,34 @@ check(abs(box1.height - row1.lineHeight) < 0.01,
 check(!box0.intersects(box1) && !box1.intersects(box2),
       "line boxes of neighbouring rows never overlap")
 
+// MARK: - Raised glyphs (quotes, apostrophes) must not move the baseline
+
+let plainURL = makePDF(from: ["Apple invoice"], name: "plain.pdf")
+let quotedURL = makePDF(from: ["\u{201C}Apple\u{201D} \u{2019}s invoice"], name: "quoted.pdf")
+if let plainURL, let quotedURL,
+   let plain = PageTextMap.make(from: plainURL), let quotedMap = PageTextMap.make(from: quotedURL),
+   let plainRow = plain.lines.first, let quotedRow = quotedMap.lines.first {
+    check(abs(plainRow.baselineY - quotedRow.baselineY) < 0.6,
+          "quotes and apostrophes do not drag the baseline up",
+          String(format: "plain %.2f vs quoted %.2f", plainRow.baselineY, quotedRow.baselineY))
+    check(abs(plainRow.fontSize - quotedRow.fontSize) < 0.6,
+          "the font size survives raised glyphs",
+          String(format: "%.2f vs %.2f", plainRow.fontSize, quotedRow.fontSize))
+    let full = PageLineSelection(line: 0, start: 0, end: quotedRow.chars.count - 1)
+    if let strike = quotedMap.annotationRect(for: full, style: .strikeThrough) {
+        check(strike.midY > quotedRow.rect.minY && strike.midY < quotedRow.rect.maxY,
+              "quoted row: strike-through still crosses the glyphs",
+              String(format: "y %.2f in %.2f…%.2f", strike.midY, quotedRow.rect.minY, quotedRow.rect.maxY))
+    }
+    if let underline = quotedMap.annotationRect(for: full, style: .underline) {
+        check(underline.midY > quotedRow.baselineY,
+              "quoted row: underline still sits below the baseline",
+              String(format: "%.2f vs %.2f", underline.midY, quotedRow.baselineY))
+    }
+} else {
+    check(false, "could not build the quoted fixture")
+}
+
 // MARK: - Each tool paints its line where the tool belongs
 
 let fullRow = PageLineSelection(line: 1, start: 0, end: row1.chars.count - 1)

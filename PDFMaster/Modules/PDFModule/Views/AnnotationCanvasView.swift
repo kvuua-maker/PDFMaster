@@ -695,6 +695,11 @@ final class AnnotationCanvasView: UIView {
 
     private func commitActiveSelection() {
         guard let rect = annotationNormalisedRect else { return }
+        RuntimeDiagnostics.shared.log(
+            "annotation",
+            String(format: "commit kind=%@ normalised=(%.4f,%.4f,%.4f,%.4f)",
+                   kind.rawValue, rect.minX, rect.minY, rect.width, rect.height)
+        )
         let item = PlacedAnnotation(kind: kind, rect: rect)
         annotations.append(item)
         drawCommitted()
@@ -742,7 +747,9 @@ final class AnnotationCanvasView: UIView {
            let pageRect = textMap.rect(for: lineSelection) {
             return textMap.normalised(pageRect)
         }
-        return rectSelection
+        guard let rectSelection else { return nil }
+        return normalise(toolRect(from: contentRect(fromNormalised: rectSelection)),
+                         in: content.bounds.size)
     }
 
     private func contentSelectionRect() -> CGRect? {
@@ -751,7 +758,24 @@ final class AnnotationCanvasView: UIView {
             return contentRect(from: pageRect)
         }
         guard let rectSelection else { return nil }
-        return contentRect(fromNormalised: rectSelection)
+        return toolRect(from: contentRect(fromNormalised: rectSelection))
+    }
+
+    /// Without a text layer there is no baseline, so the drawn area stands in
+    /// for the row: the underline goes along its bottom edge, the strike-through
+    /// through its middle, and a circle keeps the whole box.
+    private func toolRect(from raw: CGRect) -> CGRect {
+        let thickness = max(content.bounds.height * 0.004, 2)
+        switch kind {
+        case .underline:
+            return CGRect(x: raw.minX, y: raw.maxY - thickness,
+                          width: raw.width, height: thickness)
+        case .strikeOut:
+            return CGRect(x: raw.minX, y: raw.midY - thickness / 2,
+                          width: raw.width, height: thickness)
+        default:
+            return raw
+        }
     }
 
     private func renderSelection() {
@@ -784,19 +808,8 @@ final class AnnotationCanvasView: UIView {
     private func makeRectSelection(from start: CGPoint, to end: CGPoint) -> CGRect {
         let size = content.bounds.size
         guard size.width > 1, size.height > 1 else { return .zero }
-        if kind == .underline || kind == .strikeOut {
-            let length = max(abs(end.x - start.x), size.width * 0.02)
-            // A thin band at the finger: PDFKit paints an underline along the
-            // bottom of the band and a strike-through through its middle, so
-            // both land at the finger instead of one row above it.
-            let band = max(size.height * 0.012, 3)
-            let lineY = kind == .underline ? start.y : start.y - band / 2
-            let originX = min(max(min(start.x, end.x), 0), max(size.width - length, 0))
-            let originY = min(max(lineY, 0), max(size.height - band, 0))
-            let rect = CGRect(x: originX, y: originY,
-                              width: min(length, size.width), height: band)
-            return normalise(rect, in: size)
-        }
+        // The user draws the row area; which line is painted inside it is the
+        // tool's decision (see toolRect(from:)).
         let originX = min(start.x, end.x)
         let originY = min(start.y, end.y)
         let width = max(abs(end.x - start.x), size.width * 0.03)
