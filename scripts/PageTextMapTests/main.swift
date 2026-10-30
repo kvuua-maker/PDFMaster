@@ -121,9 +121,14 @@ for zoom in [CGFloat(1), 3, 5] {
     while y <= row2.rect.maxY + 20 {
         if let index = map.lineIndex(atY: y, tolerance: tolerance) {
             let chosen = map.lines[index]
+            // A selection may never contain glyphs of another row.
             let others = map.lines.enumerated().filter { $0.offset != index }.map { $0.element }
             if others.contains(where: { $0.rect.intersects(chosen.rect) }) { sweepOK = false }
-            if abs(y - chosen.baselineY) > spacing * 0.75 { sweepOK = false }
+            // Inside the text block the chosen row must be the nearest baseline.
+            if y >= row0.rect.minY && y <= row2.rect.maxY,
+               map.nearestLineIndex(atY: y) != index {
+                sweepOK = false
+            }
         }
         y += 1
     }
