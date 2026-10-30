@@ -14,38 +14,37 @@ struct PageLineSelection: Equatable {
 
 /// Text geometry of a single PDF page, precomputed once.
 ///
-/// Rows are modelled the way a typesetter sees them, not the way their glyph
-/// boxes happen to overlap: every row has a baseline and a line height taken
-/// from the spacing between neighbouring baselines (falling back to the row's
-/// own glyph height). Two rows therefore never merge, which is what stopped a
-/// selection from swallowing two lines when the page was zoomed in.
+/// A row is modelled the way a typesetter sees it: a baseline plus a line box
+/// whose height comes from the PDF font (`font size × 1.2`), not from the glyph
+/// boxes of whatever characters happen to be on the row. The line box is what
+/// the selection uses vertically, so its height never depends on the zoom level
+/// or on how tall the particular glyphs are.
 ///
 /// Hit testing during a drag is pure arithmetic: `PDFPage.characterBounds(at:)`
-/// is called here, never on the gesture path, so dragging cannot block the main
-/// thread inside PDFKit.
+/// is called here, never on the gesture path.
 ///
 /// All rectangles are in page points with a top-left origin, i.e. the same
 /// orientation as the rendered page image. Everything the engine consumes is
 /// normalised at the very end by `normalised(_:)`.
 struct PageTextMap {
     struct Line {
-        /// Union of every glyph box on the line.
+        /// Union of every glyph box on the line (used for the horizontal extent
+        /// and for the target-row highlight).
         let rect: CGRect
         /// Baseline: the bottom of the glyphs that have no descender.
         let baselineY: CGFloat
-        /// Distance to the neighbouring baseline, clamped to a sane range.
+        /// Font size estimated from the row's glyph boxes.
+        let fontSize: CGFloat
+        /// Line box height: `fontSize × 1.2`, capped by the row spacing.
         let lineHeight: CGFloat
         /// Glyph boxes, sorted left to right.
         let chars: [CGRect]
 
-        /// Vertical band the row owns: half a line height either side of the
-        /// baseline, i.e. up to the midpoints between neighbouring baselines.
-        /// Bands of adjacent rows therefore meet exactly where the "nearest
-        /// baseline" decision flips, so inside a text block a point belongs to
-        /// exactly one row and never falls into a dead gap.
+        /// Vertical band owned by the row: ascender above the baseline,
+        /// descender below it.
         var band: CGRect {
             CGRect(x: rect.minX,
-                   y: baselineY - lineHeight * 0.5,
+                   y: baselineY - lineHeight * 0.8,
                    width: max(rect.width, 1),
                    height: lineHeight)
         }
@@ -88,10 +87,8 @@ struct PageTextMap {
         }
         guard !boxes.isEmpty else { return nil }
 
-        // Group glyphs by baseline. Descenders sit a little below the baseline,
-        // so a glyph joins the row while it is within a fraction of the row's
-        // height; the next row starts a full line height lower, which is well
-        // outside that window.
+        // Group glyphs by baseline, so rows can never merge because their glyph
+        // boxes overlap vertically.
         boxes.sort { $0.maxY < $1.maxY }
         var clusters: [[CGRect]] = []
         var baseline: CGFloat = 0
@@ -125,20 +122,24 @@ struct PageTextMap {
         var lines: [Line] = []
         lines.reserveCapacity(raw.count)
         for (index, row) in raw.enumerated() {
-            // Prefer the spacing to the next row, so consecutive bands tile;
-            // the last row borrows the spacing above it.
+            // Actual spacing to the neighbour: the line box may not grow past
+            // it, otherwise two rows could claim the same point.
             let next = index + 1 < raw.count ? raw[index + 1].baseline - row.baseline : nil
             let previous = index > 0 ? row.baseline - raw[index - 1].baseline : nil
-            let measured = next ?? previous ?? 0
-            let fallback = max(row.rect.height * 1.35, 8)
-            let lineHeight: CGFloat
-            if measured > 4 {
-                lineHeight = min(max(measured, 8), max(row.rect.height * 2.6, 12))
-            } else {
-                lineHeight = fallback
+            let spacing = next ?? previous ?? 0
+            // Font size from the row's glyphs: a typical Latin glyph box is
+            // about 0.72 em tall.
+            let heights = row.chars.map(\.height).sorted()
+            let medianHeight = heights[heights.count / 2]
+            let fontSize = max(medianHeight / 0.72, 4)
+            var lineHeight = fontSize * 1.2
+            if spacing > 2 {
+                lineHeight = min(lineHeight, spacing * 0.95)
             }
+            lineHeight = max(lineHeight, 6)
             lines.append(Line(rect: row.rect,
                               baselineY: row.baseline,
+                              fontSize: fontSize,
                               lineHeight: lineHeight,
                               chars: row.chars))
         }
@@ -146,24 +147,31 @@ struct PageTextMap {
                            lines: lines)
     }
 
-    // MARK: - Hit testing
+    // MARK: - Coordinates
 
-    /// Tolerance in page points. It shrinks as the page is zoomed in, so a
-    /// finger covers fewer page points at 3× than at 1×, and it is clamped to
-    /// 40% of the row height so it can never reach the neighbouring row.
-    static func tolerance(base: CGFloat, relativeZoom: CGFloat, lineHeight: CGFloat) -> CGFloat {
-        let scaled = base / max(relativeZoom, 1)
-        return min(scaled, max(lineHeight * 0.4, 1))
+    /// Content-view point (page image space) → page point. Kept here so the
+    /// conversion is testable; the canvas must apply it to the touch-down
+    /// point, not to the point where the pan happens to be recognised.
+    func pagePoint(fromContentPoint point: CGPoint, contentSize: CGSize) -> CGPoint {
+        guard contentSize.width > 0, contentSize.height > 0 else { return point }
+        return CGPoint(x: point.x * pageSize.width / contentSize.width,
+                       y: point.y * pageSize.height / contentSize.height)
     }
 
-    /// Row under a vertical position. The nearest baseline wins, but only while
-    /// the point is inside the row's band plus the zoom-scaled tolerance;
-    /// otherwise there is no row and no selection is created.
-    func lineIndex(atY y: CGFloat, tolerance: CGFloat) -> Int? {
+    // MARK: - Hit testing
+
+    /// The miss margin outside the line box. It is a fraction of the row height
+    /// and nothing else — it does not grow with the zoom level, so a row is as
+    /// easy to hit at 5× as at 1×.
+    static func tolerance(lineHeight: CGFloat) -> CGFloat {
+        max(lineHeight * 0.4, 1)
+    }
+
+    /// Row under a vertical position: the nearest baseline, provided the point
+    /// is inside that row's line box or within 40% of the line height of it.
+    /// Points further away belong to no row at all.
+    func lineIndex(atY y: CGFloat) -> Int? {
         guard !lines.isEmpty else { return nil }
-        // The closest baseline decides which row the finger means; the band and
-        // the tolerance only decide whether the finger is close enough to any
-        // text at all.
         var closest = 0
         var closestDistance = CGFloat.greatestFiniteMagnitude
         for (index, line) in lines.enumerated() {
@@ -183,10 +191,7 @@ struct PageTextMap {
         } else {
             outside = 0
         }
-        // Never let the miss margin exceed 40% of the row height, whatever
-        // tolerance the caller derived from the zoom level.
-        let limit = min(tolerance, max(line.lineHeight * 0.4, 1))
-        return outside <= limit ? closest : nil
+        return outside <= Self.tolerance(lineHeight: line.lineHeight) ? closest : nil
     }
 
     /// Closest baseline regardless of distance — used while dragging a handle,
@@ -230,8 +235,8 @@ struct PageTextMap {
     /// Word under a tap: the tapped glyph expanded while neighbouring glyphs
     /// stay within a word gap. Geometric, so it works even when PDFKit returns
     /// no glyph box for spaces.
-    func wordSelection(at point: CGPoint, tolerance: CGFloat) -> PageLineSelection? {
-        guard let lineIndex = lineIndex(atY: point.y, tolerance: tolerance) else { return nil }
+    func wordSelection(at point: CGPoint) -> PageLineSelection? {
+        guard let lineIndex = lineIndex(atY: point.y) else { return nil }
         let line = lines[lineIndex]
         guard !line.chars.isEmpty else { return nil }
         let index = charIndex(inLine: lineIndex, atX: point.x)
@@ -274,19 +279,19 @@ struct PageTextMap {
                                  end: min(max(selection.end, 0), last))
     }
 
-    /// Union of the selected glyph boxes.
+    /// The selection rectangle: X from the selected glyphs (character accurate),
+    /// Y from the row's font line box (so the height is one row, at any zoom).
     func rect(for selection: PageLineSelection) -> CGRect? {
         guard lines.indices.contains(selection.line) else { return nil }
-        let chars = lines[selection.line].chars
+        let line = lines[selection.line]
+        let chars = line.chars
         guard !chars.isEmpty else { return nil }
         let lower = min(max(selection.lower, 0), chars.count - 1)
         let upper = min(max(selection.upper, lower), chars.count - 1)
-        if lower == upper { return chars[lower] }
-        var rect = chars[lower]
-        for index in (lower + 1)...upper {
-            rect = rect.union(chars[index])
-        }
-        return rect
+        let minX = chars[lower].minX
+        let maxX = chars[upper].maxX
+        let top = line.baselineY - line.lineHeight * 0.8
+        return CGRect(x: minX, y: top, width: max(maxX - minX, 1), height: line.lineHeight)
     }
 
     /// Page points → 0…1 with a top-left origin (what the PDF engine takes).

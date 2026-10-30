@@ -47,10 +47,13 @@ final class AnnotationCanvasView: UIView {
     private var rectSelection: CGRect?
     private var rectAnchor: CGPoint?
 
-    /// Line tools.
+    /// Line tools. The selection survives taps and drags until Apply/Clear.
     private var lineSelection: PageLineSelection?
-    private var anchorLine: Int?
-    private var dragStartX: CGFloat?
+    /// Page-space point where the current drag started (touch-down, not the
+    /// point where the pan happened to be recognised).
+    private var dragAnchor: CGPoint?
+    private var anchorRow: Int?
+    private var dragHandle: RowSelectionEditing.Handle?
 
     private var fitted = false
     private var lastRender: CFTimeInterval = 0
@@ -266,13 +269,6 @@ final class AnnotationCanvasView: UIView {
         pagePoint(from: clampToContent(contentPoint))
     }
 
-    private func toleranceForZoom() -> CGFloat {
-        let fit = scrollView.minimumZoomScale > 0 ? scrollView.minimumZoomScale : 1
-        let relativeZoom = max(scrollView.zoomScale / fit, 1)
-        let height = textMap?.lines.first?.lineHeight ?? 12
-        return PageTextMap.tolerance(base: 10, relativeZoom: relativeZoom, lineHeight: height)
-    }
-
     // MARK: - Drawing gesture
 
     @objc private func handleDraw(_ gesture: UIPanGestureRecognizer) {
@@ -316,59 +312,123 @@ final class AnnotationCanvasView: UIView {
         guard let textMap else { return }
         switch gesture.state {
         case .began:
-            hideHandles()
             hideActionBar()
             hideTargetLine()
-            guard let line = textMap.lineIndex(atY: point.y, tolerance: toleranceForZoom()) else {
-                // No row under the finger: show nothing rather than a box the
-                // user did not ask for.
-                anchorLine = nil
-                dragStartX = nil
-                lineSelection = nil
-                renderThrottled(force: true)
-                return
-            }
-            anchorLine = line
-            dragStartX = point.x
-            let index = textMap.charIndex(inLine: line, atX: point.x)
-            lineSelection = PageLineSelection(line: line, start: index, end: index)
-            renderThrottled(force: true)
+            let touch = touchDownPoint(gesture)
+            logTouch(gesture, touchDown: touch)
+            beginLineDrag(at: touch, in: textMap)
         case .changed:
-            guard let line = anchorLine, let startX = dragStartX else { return }
-            lineSelection = textMap.selection(onLine: line, fromX: startX, toX: point.x)
-            renderThrottled()
+            updateLineDrag(to: point, in: textMap)
         case .ended:
-            guard let line = anchorLine, let startX = dragStartX else { return }
-            anchorLine = nil
-            dragStartX = nil
-            guard let finished = textMap.selection(onLine: line, fromX: startX, toX: point.x) else {
-                renderThrottled(force: true)
-                return
-            }
-            lineSelection = finished
+            dragAnchor = nil
+            dragHandle = nil
+            anchorRow = nil
             renderThrottled(force: true)
             showHandles()
             showActionBar()
         case .cancelled, .failed:
-            anchorLine = nil
-            dragStartX = nil
-            lineSelection = nil
+            // Keep the selection: an interrupted drag must not throw away work.
+            dragAnchor = nil
+            dragHandle = nil
+            anchorRow = nil
             renderThrottled(force: true)
-            hideHandles()
-            hideActionBar()
+            showHandles()
+            showActionBar()
         default:
             break
         }
     }
 
-    /// A tap selects the word under the finger, snapped to its row.
+    /// The point where the finger first touched the glass.
+    ///
+    /// A `UIPanGestureRecognizer` only begins after the finger has travelled
+    /// its recognition distance, so `location(in:)` at `.began` is already
+    /// ~10 pt away from the touch-down point. Subtracting the translation
+    /// recovers the real start — this was the offset at the start of a
+    /// selection.
+    private func touchDownPoint(_ gesture: UIPanGestureRecognizer) -> CGPoint {
+        let location = gesture.location(in: content)
+        let translation = gesture.translation(in: content)
+        return CGPoint(x: location.x - translation.x, y: location.y - translation.y)
+    }
+
+    private func logTouch(_ gesture: UIPanGestureRecognizer, touchDown: CGPoint) {
+        let translation = gesture.translation(in: content)
+        let page = pagePoint(from: clampToContent(touchDown))
+        RuntimeDiagnostics.shared.log(
+            "annotation",
+            String(format: "touch-down content=(%.1f,%.1f) translation=(%.1f,%.1f) page=(%.1f,%.1f) zoom=%.3f",
+                   touchDown.x, touchDown.y, translation.x, translation.y,
+                   page.x, page.y, scrollView.zoomScale)
+        )
+    }
+
+    private func beginLineDrag(at touch: CGPoint, in textMap: PageTextMap) {
+        dragAnchor = touch
+        anchorRow = lineSelection?.line
+        // An existing selection is adjusted, never thrown away.
+        if let existing = lineSelection {
+            dragHandle = RowSelectionEditing.nearestHandle(in: textMap,
+                                                           selection: existing,
+                                                           atX: touch.x)
+            renderThrottled(force: true)
+            return
+        }
+        dragHandle = nil
+        guard let line = textMap.lineIndex(atY: touch.y) else {
+            anchorRow = nil
+            renderThrottled(force: true)
+            return
+        }
+        anchorRow = line
+        let index = textMap.charIndex(inLine: line, atX: touch.x)
+        lineSelection = PageLineSelection(line: line, start: index, end: index)
+        renderThrottled(force: true)
+    }
+
+    private func updateLineDrag(to point: CGPoint, in textMap: PageTextMap) {
+        guard let anchor = dragAnchor, let current = lineSelection else { return }
+        var selection = current
+
+        // Slide to the neighbouring row only when the finger really left the
+        // row it started on; the selection itself stays a single row.
+        if let row = textMap.nearestLineIndex(atY: point.y), let row0 = anchorRow, row != row0 {
+            let origin = textMap.lines[row0]
+            if abs(point.y - origin.baselineY) > origin.lineHeight * 0.5 {
+                anchorRow = row
+                selection = textMap.clamped(selection, to: row)
+            }
+        }
+
+        if let handle = dragHandle {
+            lineSelection = RowSelectionEditing.moving(handle,
+                                                       toX: point.x,
+                                                       onRow: selection.line,
+                                                       in: textMap,
+                                                       selection: selection)
+        } else {
+            // Creating: the start is the touch-down character, the end follows
+            // the finger. Both are character-granular.
+            lineSelection = textMap.selection(onLine: selection.line,
+                                              fromX: anchor.x,
+                                              toX: point.x)
+        }
+        renderThrottled()
+    }
+
+    /// A tap adjusts an existing selection; with no selection it selects the
+    /// word under the finger.
     @objc private func handleWordTap(_ gesture: UITapGestureRecognizer) {
         guard usesLineSnapping, let textMap else { return }
         let point = clampedPagePoint(gesture.location(in: content))
-        guard let word = textMap.wordSelection(at: point, tolerance: toleranceForZoom()) else {
-            clearActiveSelection()
+        if let selection = lineSelection {
+            lineSelection = RowSelectionEditing.tap(at: point, in: textMap, selection: selection)
+            renderThrottled(force: true)
+            showHandles()
+            showActionBar()
             return
         }
+        guard let word = textMap.wordSelection(at: point) else { return }
         lineSelection = word
         renderThrottled(force: true)
         showHandles()
@@ -397,17 +457,12 @@ final class AnnotationCanvasView: UIView {
             // Snap to the nearest baseline, so moving one finger across rows is
             // a single, predictable step instead of a fight with a threshold.
             let line = textMap.nearestLineIndex(atY: point.y) ?? base.line
-            var candidate = textMap.clamped(base, to: line)
-            let index = textMap.charIndex(inLine: line, atX: point.x)
-            if role == .start {
-                candidate.start = index
-            } else {
-                candidate.end = index
-            }
-            if candidate.start > candidate.end {
-                swap(&candidate.start, &candidate.end)
-            }
-            lineSelection = candidate
+            let handle: RowSelectionEditing.Handle = role == .start ? .start : .end
+            lineSelection = RowSelectionEditing.moving(handle,
+                                                       toX: point.x,
+                                                       onRow: line,
+                                                       in: textMap,
+                                                       selection: base)
             showTargetLine(line)
             // Only the selection path and the two 44 pt handles are touched;
             // the path itself is capped at 30 fps, the handles follow every
@@ -424,6 +479,12 @@ final class AnnotationCanvasView: UIView {
         }
     }
 
+    private func lineBoxRect(_ index: Int, in textMap: PageTextMap) -> CGRect {
+        let count = textMap.lines[index].chars.count
+        let selection = PageLineSelection(line: index, start: 0, end: max(count - 1, 0))
+        return textMap.rect(for: selection) ?? textMap.lines[index].rect
+    }
+
     /// Highlights the row the handle is currently snapping to.
     private func showTargetLine(_ index: Int) {
         guard let textMap, textMap.lines.indices.contains(index) else {
@@ -433,7 +494,7 @@ final class AnnotationCanvasView: UIView {
         guard highlightedLine != index else { return }
         highlightedLine = index
         let zoom = max(scrollView.zoomScale, 0.1)
-        let rowRect = contentRect(from: textMap.lines[index].rect)
+        let rowRect = contentRect(from: lineBoxRect(index, in: textMap))
         let padded = rowRect.insetBy(dx: -4 / zoom, dy: -1.5 / zoom)
         targetLineLayer.path = UIBezierPath(roundedRect: padded,
                                             cornerRadius: 3 / zoom).cgPath
@@ -533,8 +594,9 @@ final class AnnotationCanvasView: UIView {
     private func clearActiveSelection() {
         lineSelection = nil
         rectSelection = nil
-        anchorLine = nil
-        dragStartX = nil
+        dragAnchor = nil
+        dragHandle = nil
+        anchorRow = nil
         hideHandles()
         hideActionBar()
         hideTargetLine()
