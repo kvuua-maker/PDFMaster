@@ -27,6 +27,7 @@ final class AnnotationCanvasView: UIView {
     /// Normalised selection (0…1, top-left origin), the coordinate space the
     /// PDF engine expects.
     private var selection: CGRect?
+    private var committed: CGRect?
     private var startPoint: CGPoint?
     private var fitted = false
 
@@ -135,13 +136,20 @@ final class AnnotationCanvasView: UIView {
             guard let startPoint else { return }
             selection = makeSelection(from: startPoint, to: location)
             renderSelection()
-        case .ended, .cancelled, .failed:
+        case .ended:
             guard let startPoint else { return }
             self.startPoint = nil
             let finished = makeSelection(from: startPoint, to: location)
+            committed = finished
             selection = finished
             renderSelection()
             onSelection?(finished)
+        case .cancelled, .failed:
+            // A second finger arrived (zoom started) or the system interrupted
+            // the touch: drop the half-drawn preview instead of committing it.
+            startPoint = nil
+            selection = committed
+            renderSelection()
         default:
             break
         }
