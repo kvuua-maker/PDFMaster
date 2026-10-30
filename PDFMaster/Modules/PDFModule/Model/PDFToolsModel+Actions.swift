@@ -75,12 +75,7 @@ extension PDFToolsModel {
         guard let url = results.first else { return }
         let kind = placementKind
         run { Optional(try await PDFToolsEngine.shared.addAnnotation(url, kind: kind, normalizedRect: rect)) }
-        // The cover keeps drawing its content while it animates out; release the
-        // rendered page only after that finishes.
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1))
-            placementImage = nil
-        }
+        releasePlacementImageSoon()
     }
 
     func startPlacement(_ kind: PDFAnnotationKind) {
@@ -97,7 +92,17 @@ extension PDFToolsModel {
 
     func cancelPlacement() {
         showPlacement = false
-        placementImage = nil
+        releasePlacementImageSoon()
+    }
+
+    /// The cover keeps drawing its content while it animates out, so the
+    /// rendered page is released only after dismissal; reopening the tool in
+    /// the meantime keeps the newer render.
+    private func releasePlacementImageSoon() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            if !showPlacement { placementImage = nil }
+        }
     }
 
     func deleteRangePages() {
