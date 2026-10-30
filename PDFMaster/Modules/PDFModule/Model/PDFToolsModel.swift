@@ -50,6 +50,9 @@ final class PDFToolsModel {
     /// Rendered page shown by the placement canvas. Rendered once when the tool
     /// is picked, so the sheet never re-renders while it is on screen.
     var placementImage: UIImage?
+    /// Glyph geometry of page 1 for the line tools, built once when the tool is
+    /// picked so dragging never touches PDFKit.
+    var placementTextMap: PageTextMap?
     var showViewer = false
     var viewerPage = 0
     var deleteRange = "2-4"

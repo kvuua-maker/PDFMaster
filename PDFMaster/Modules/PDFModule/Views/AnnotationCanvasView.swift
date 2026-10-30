@@ -1,17 +1,21 @@
+import QuartzCore
 import UIKit
 
 /// Zoomable, pannable page canvas for placing an annotation precisely.
 ///
 /// The page image lives inside a scroll view, which gives three things the
-/// previous implementation did not have:
+/// first implementation did not have:
 /// * pinch-to-zoom and a two-finger drag pan the page while a tool is active;
 /// * every touch is converted through the content view, whose bounds are the
-///   page itself, so the rectangle is exact at any zoom level or scroll offset
-///   (before, raw screen points were divided by the container size, which
-///   shifted the annotation whenever the page was letterboxed, zoomed or
-///   scrolled);
+///   page itself, so the rectangle is exact at any zoom level or scroll offset;
 /// * one finger draws — for underline and strike-through the drag distance
-///   sets the line length, so the line ends where the finger is lifted.
+///   sets the line length.
+///
+/// Line tools (underline, strike-through, circle) no longer select the finger's
+/// rectangle. They snap to the glyph boxes of one text row, which is why the
+/// selection can no longer swallow two lines. The row geometry is precomputed
+/// by `PageTextMap`, so a drag does arithmetic only: no PDFKit call runs on the
+/// gesture path and nothing blocks the main thread.
 @MainActor
 final class AnnotationCanvasView: UIView {
     let scrollView = UIScrollView()
@@ -21,22 +25,37 @@ final class AnnotationCanvasView: UIView {
     private let selectionLayer = CAShapeLayer()
     private let zoomDelegate = CanvasZoomDelegate()
     private let drawGesture = UIPanGestureRecognizer()
+    private let wordTap = UITapGestureRecognizer()
+    private let startHandle = SelectionHandleView(isStart: true)
+    private let endHandle = SelectionHandleView(isStart: false)
 
     private let pageImage: UIImage
+    private let textMap: PageTextMap?
     private var kind: PDFAnnotationKind
-    /// Normalised selection (0…1, top-left origin), the coordinate space the
-    /// PDF engine expects.
-    private var selection: CGRect?
-    private var committed: CGRect?
-    private var startPoint: CGPoint?
-    private var fitted = false
 
-    /// Called on the main actor after a drag finishes.
+    /// Free rectangle tools, normalised (0…1, top-left origin).
+    private var rectSelection: CGRect?
+    private var committedRect: CGRect?
+    private var rectAnchor: CGPoint?
+
+    /// Line tools.
+    private var lineSelection: PageLineSelection?
+    private var committedLine: PageLineSelection?
+    private var anchorLine: Int?
+    private var dragStartX: CGFloat?
+
+    private enum HandleRole { case start, end }
+
+    private var fitted = false
+    private var lastRender: CFTimeInterval = 0
+
+    /// Called on the main actor after a selection is committed.
     var onSelection: ((CGRect?) -> Void)?
 
-    init(image: UIImage, kind: PDFAnnotationKind) {
+    init(image: UIImage, kind: PDFAnnotationKind, textMap: PageTextMap?) {
         self.pageImage = image
         self.kind = kind
+        self.textMap = textMap
         super.init(frame: .zero)
         setUp()
     }
@@ -81,16 +100,43 @@ final class AnnotationCanvasView: UIView {
         drawGesture.addTarget(self, action: #selector(handleDraw(_:)))
         drawGesture.maximumNumberOfTouches = 1
         content.addGestureRecognizer(drawGesture)
+
+        wordTap.addTarget(self, action: #selector(handleWordTap(_:)))
+        wordTap.require(toFail: drawGesture)
+        content.addGestureRecognizer(wordTap)
+
+        // Handles sit above the scroll view, so a touch that starts on one of
+        // them never reaches the draw gesture or the scroll pan: the drag is
+        // already exclusive without a recogniser-priority dance.
+        startHandle.setColor(kind.color)
+        endHandle.setColor(kind.color)
+        startHandle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handleStartPanned(_:))))
+        endHandle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handleEndPanned(_:))))
+        addSubview(startHandle)
+        addSubview(endHandle)
     }
 
     /// The tool can change while the canvas is on screen.
     func update(kind newKind: PDFAnnotationKind) {
         if newKind == kind { return }
+        let wasLineTool = usesLineSnapping
         kind = newKind
         selectionLayer.fillColor = newKind.color.withAlphaComponent(0.22).cgColor
         selectionLayer.strokeColor = newKind.color.cgColor
-        renderSelection()
+        startHandle.setColor(newKind.color)
+        endHandle.setColor(newKind.color)
+        if wasLineTool != usesLineSnapping {
+            lineSelection = nil
+            committedLine = nil
+            rectSelection = nil
+            committedRect = nil
+            hideHandles()
+            onSelection?(nil)
+        }
+        renderThrottled(force: true)
     }
+
+    // MARK: - Layout and zoom
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -123,53 +169,279 @@ final class AnnotationCanvasView: UIView {
         scrollView.contentInset = UIEdgeInsets(top: vertical, left: horizontal,
                                                bottom: vertical, right: horizontal)
         renderSelection()
+        updateHandlePositions()
     }
 
-    @objc private func handleDraw(_ gesture: UIPanGestureRecognizer) {
-        let location = clampToPage(gesture.location(in: content))
-        switch gesture.state {
-        case .began:
-            startPoint = location
-            selection = makeSelection(from: location, to: location)
-            renderSelection()
-        case .changed:
-            guard let startPoint else { return }
-            selection = makeSelection(from: startPoint, to: location)
-            renderSelection()
-        case .ended:
-            guard let startPoint else { return }
-            self.startPoint = nil
-            let finished = makeSelection(from: startPoint, to: location)
-            committed = finished
-            selection = finished
-            renderSelection()
-            onSelection?(finished)
-        case .cancelled, .failed:
-            // A second finger arrived (zoom started) or the system interrupted
-            // the touch: drop the half-drawn preview instead of committing it.
-            startPoint = nil
-            selection = committed
-            renderSelection()
-        default:
-            break
-        }
+    // MARK: - Tool mode
+
+    /// Line tools are used only when the page really has a text layer and the
+    /// rendered image has the same orientation as the page box (a rotated page
+    /// renders with swapped sides, and snapping would be off).
+    private var usesLineSnapping: Bool {
+        guard let textMap, !textMap.isEmpty else { return false }
+        guard pageImage.size.width > 1, pageImage.size.height > 1 else { return false }
+        let imageRatio = pageImage.size.width / pageImage.size.height
+        let pageRatio = textMap.pageSize.width / textMap.pageSize.height
+        guard abs(imageRatio - pageRatio) < 0.02 else { return false }
+        return kind.followsTextLines
     }
 
-    private func clampToPage(_ point: CGPoint) -> CGPoint {
+    // MARK: - Coordinate conversion
+
+    private func pagePoint(from contentPoint: CGPoint) -> CGPoint {
+        guard let textMap, content.bounds.width > 0, content.bounds.height > 0 else { return contentPoint }
+        return CGPoint(x: contentPoint.x * textMap.pageSize.width / content.bounds.width,
+                       y: contentPoint.y * textMap.pageSize.height / content.bounds.height)
+    }
+
+    private func contentRect(from pageRect: CGRect) -> CGRect {
+        guard let textMap else { return .zero }
+        let scaleX = content.bounds.width / max(textMap.pageSize.width, 1)
+        let scaleY = content.bounds.height / max(textMap.pageSize.height, 1)
+        return CGRect(x: pageRect.minX * scaleX, y: pageRect.minY * scaleY,
+                      width: pageRect.width * scaleX, height: pageRect.height * scaleY)
+    }
+
+    private func clampToContent(_ point: CGPoint) -> CGPoint {
         let size = content.bounds.size
         return CGPoint(x: min(max(point.x, 0), size.width),
                        y: min(max(point.y, 0), size.height))
     }
 
-    private func makeSelection(from start: CGPoint, to end: CGPoint) -> CGRect {
+    private func clampedPagePoint(_ contentPoint: CGPoint) -> CGPoint {
+        pagePoint(from: clampToContent(contentPoint))
+    }
+
+    private func toleranceForZoom() -> CGFloat {
+        let fit = scrollView.minimumZoomScale > 0 ? scrollView.minimumZoomScale : 1
+        let relativeZoom = max(scrollView.zoomScale / fit, 1)
+        return PageTextMap.tolerance(base: 10, relativeZoom: relativeZoom, lineHeight: 12)
+    }
+
+    // MARK: - Drawing gesture
+
+    @objc private func handleDraw(_ gesture: UIPanGestureRecognizer) {
+        let location = gesture.location(in: content)
+        if usesLineSnapping {
+            handleLineDraw(gesture, at: clampedPagePoint(location))
+        } else {
+            handleRectDraw(gesture, at: clampToContent(location))
+        }
+    }
+
+    private func handleRectDraw(_ gesture: UIPanGestureRecognizer, at point: CGPoint) {
+        switch gesture.state {
+        case .began:
+            rectAnchor = point
+            rectSelection = makeRectSelection(from: point, to: point)
+            renderThrottled(force: true)
+        case .changed:
+            guard let rectAnchor else { return }
+            rectSelection = makeRectSelection(from: rectAnchor, to: point)
+            renderThrottled()
+        case .ended:
+            guard let rectAnchor else { return }
+            self.rectAnchor = nil
+            let finished = makeRectSelection(from: rectAnchor, to: point)
+            rectSelection = finished
+            committedRect = finished
+            renderThrottled(force: true)
+            onSelection?(finished)
+        case .cancelled, .failed:
+            rectAnchor = nil
+            rectSelection = committedRect
+            renderThrottled(force: true)
+        default:
+            break
+        }
+    }
+
+    private func handleLineDraw(_ gesture: UIPanGestureRecognizer, at point: CGPoint) {
+        guard let textMap else { return }
+        switch gesture.state {
+        case .began:
+            hideHandles()
+            guard let line = textMap.lineIndex(atY: point.y, tolerance: toleranceForZoom()) else {
+                // No row under the finger: show nothing rather than a box the
+                // user did not ask for.
+                anchorLine = nil
+                dragStartX = nil
+                lineSelection = nil
+                committedLine = nil
+                renderThrottled(force: true)
+                onSelection?(nil)
+                return
+            }
+            anchorLine = line
+            dragStartX = point.x
+            let index = textMap.charIndex(inLine: line, atX: point.x)
+            lineSelection = PageLineSelection(line: line, start: index, end: index)
+            renderThrottled(force: true)
+        case .changed:
+            guard let line = anchorLine, let startX = dragStartX else { return }
+            lineSelection = textMap.selection(onLine: line, fromX: startX, toX: point.x)
+            renderThrottled()
+        case .ended:
+            guard let line = anchorLine, let startX = dragStartX else { return }
+            anchorLine = nil
+            dragStartX = nil
+            guard let finished = textMap.selection(onLine: line, fromX: startX, toX: point.x) else {
+                lineSelection = committedLine
+                renderThrottled(force: true)
+                return
+            }
+            lineSelection = finished
+            committedLine = finished
+            renderThrottled(force: true)
+            showHandles()
+            onSelection?(normalisedSelection)
+        case .cancelled, .failed:
+            anchorLine = nil
+            dragStartX = nil
+            lineSelection = committedLine
+            renderThrottled(force: true)
+            showHandles()
+        default:
+            break
+        }
+    }
+
+    /// A tap selects the word under the finger, snapped to its row.
+    @objc private func handleWordTap(_ gesture: UITapGestureRecognizer) {
+        guard usesLineSnapping, let textMap else { return }
+        let point = clampedPagePoint(gesture.location(in: content))
+        guard let word = textMap.wordSelection(at: point, tolerance: toleranceForZoom()) else {
+            lineSelection = nil
+            committedLine = nil
+            renderThrottled(force: true)
+            hideHandles()
+            onSelection?(nil)
+            return
+        }
+        lineSelection = word
+        committedLine = word
+        renderThrottled(force: true)
+        showHandles()
+        onSelection?(normalisedSelection)
+    }
+
+    // MARK: - Handles
+
+    @objc private func handleStartPanned(_ gesture: UIPanGestureRecognizer) {
+        handleHandleDrag(gesture, role: .start)
+    }
+
+    @objc private func handleEndPanned(_ gesture: UIPanGestureRecognizer) {
+        handleHandleDrag(gesture, role: .end)
+    }
+
+    private func handleHandleDrag(_ gesture: UIPanGestureRecognizer, role: HandleRole) {
+        guard usesLineSnapping, let textMap, let base = lineSelection else { return }
+        let point = clampedPagePoint(gesture.location(in: content))
+        switch gesture.state {
+        case .began:
+            break
+        case .changed:
+            // Snap to the nearest row, so moving one finger across rows is a
+            // single, predictable step instead of a fight with a threshold.
+            let line = textMap.nearestLineIndex(atY: point.y) ?? base.line
+            var candidate = textMap.clamped(base, to: line)
+            let index = textMap.charIndex(inLine: line, atX: point.x)
+            if role == .start {
+                candidate.start = index
+            } else {
+                candidate.end = index
+            }
+            if candidate.start > candidate.end {
+                swap(&candidate.start, &candidate.end)
+            }
+            lineSelection = candidate
+            // The layer path is throttled; the handle itself follows every
+            // event so the dot never feels laggy under the finger.
+            renderThrottled()
+            updateHandlePositions()
+        case .ended, .cancelled, .failed:
+            committedLine = lineSelection
+            renderThrottled(force: true)
+            showHandles()
+            onSelection?(normalisedSelection)
+        default:
+            break
+        }
+    }
+
+    private func showHandles() {
+        guard usesLineSnapping, contentSelectionRect() != nil else {
+            hideHandles()
+            return
+        }
+        startHandle.isHidden = false
+        endHandle.isHidden = false
+        updateHandlePositions()
+    }
+
+    private func hideHandles() {
+        startHandle.isHidden = true
+        endHandle.isHidden = true
+    }
+
+    func updateHandlePositions() {
+        guard !startHandle.isHidden, let contentRect = contentSelectionRect() else { return }
+        let canvasRect = content.convert(contentRect, to: self)
+        startHandle.center = CGPoint(x: canvasRect.minX, y: canvasRect.midY)
+        endHandle.center = CGPoint(x: canvasRect.maxX, y: canvasRect.midY)
+    }
+
+    // MARK: - Rendering
+
+    private var normalisedSelection: CGRect? {
+        if usesLineSnapping, let textMap, let lineSelection,
+           let pageRect = textMap.rect(for: lineSelection) {
+            return textMap.normalised(pageRect)
+        }
+        return rectSelection
+    }
+
+    private func contentSelectionRect() -> CGRect? {
+        if usesLineSnapping, let textMap, let lineSelection,
+           let pageRect = textMap.rect(for: lineSelection) {
+            return contentRect(from: pageRect)
+        }
+        guard let rectSelection else { return nil }
+        let size = content.bounds.size
+        return CGRect(x: rectSelection.minX * size.width,
+                      y: rectSelection.minY * size.height,
+                      width: rectSelection.width * size.width,
+                      height: rectSelection.height * size.height)
+    }
+
+    private func renderSelection() {
+        guard let rect = contentSelectionRect() else {
+            selectionLayer.path = nil
+            return
+        }
+        selectionLayer.path = UIBezierPath(rect: rect).cgPath
+        // Keep the outline one physical pixel-ish wide at every zoom level.
+        selectionLayer.lineWidth = max(1.5 / max(scrollView.zoomScale, 0.05), 0.4)
+    }
+
+    /// Caps visual updates at 30 fps; the final state is always drawn on release.
+    private func renderThrottled(force: Bool = false) {
+        let now = CACurrentMediaTime()
+        guard force || now - lastRender >= 1.0 / 30.0 else { return }
+        lastRender = now
+        renderSelection()
+        updateHandlePositions()
+    }
+
+    // MARK: - Geometry for rectangle tools
+
+    private func makeRectSelection(from start: CGPoint, to end: CGPoint) -> CGRect {
         let size = content.bounds.size
         guard size.width > 1, size.height > 1 else { return .zero }
         if kind == .underline || kind == .strikeOut {
             let length = max(abs(end.x - start.x), size.width * 0.02)
             let band = max(size.height * 0.022, 4)
-            // PDFKit paints an underline along the bottom of the bounds and a
-            // strike-through through the middle, so the band is shifted to keep
-            // the visible line exactly where the finger is.
             let lineY = kind == .underline ? start.y - band : start.y - band / 2
             let originX = min(max(min(start.x, end.x), 0), max(size.width - length, 0))
             let originY = min(max(lineY, 0), max(size.height - band, 0))
@@ -192,20 +464,16 @@ final class AnnotationCanvasView: UIView {
         let height = min(max(rect.height / size.height, 0.001), 1 - y)
         return CGRect(x: x, y: y, width: width, height: height)
     }
+}
 
-    private func renderSelection() {
-        guard let selection else {
-            selectionLayer.path = nil
-            return
+extension PDFAnnotationKind {
+    /// Underline, strike-through and circle are meant to follow a text row, so
+    /// they are placed through `PageTextMap` instead of a free rectangle.
+    var followsTextLines: Bool {
+        switch self {
+        case .underline, .strikeOut, .circle: return true
+        default: return false
         }
-        let size = content.bounds.size
-        let rect = CGRect(x: selection.minX * size.width,
-                          y: selection.minY * size.height,
-                          width: selection.width * size.width,
-                          height: selection.height * size.height)
-        selectionLayer.path = UIBezierPath(rect: rect).cgPath
-        // Keep the outline one physical pixel-ish wide at every zoom level.
-        selectionLayer.lineWidth = max(1.5 / max(scrollView.zoomScale, 0.05), 0.4)
     }
 }
 
@@ -225,5 +493,10 @@ private final class CanvasZoomDelegate: NSObject, UIScrollViewDelegate {
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         guard let canvas else { return }
         MainActor.assumeIsolated { canvas.updateZoomInsets() }
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard let canvas else { return }
+        MainActor.assumeIsolated { canvas.updateHandlePositions() }
     }
 }

@@ -76,7 +76,9 @@ private struct PDFToolsBindings: ViewModifier {
                 }
             }
             .fullScreenCover(isPresented: $model.showPlacement) {
-                AnnotationPlacementView(image: model.placementImage, kind: model.placementKind) { rect in
+                AnnotationPlacementView(image: model.placementImage,
+                                        kind: model.placementKind,
+                                        textMap: model.placementTextMap) { rect in
                     model.placeAnnotation(rect)
                 } onCancel: {
                     model.cancelPlacement()

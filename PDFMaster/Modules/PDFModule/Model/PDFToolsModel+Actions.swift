@@ -82,10 +82,24 @@ extension PDFToolsModel {
         placementKind = kind
         // A wider render keeps small text readable once the page is zoomed in;
         // it is produced once here instead of on every sheet update.
-        if let url = results.first {
-            placementImage = PDFToolsEngine.shared.pageImageSync(url, maxWidth: 1600)
-        } else {
+        guard let url = results.first else {
             placementImage = nil
+            placementTextMap = nil
+            showPlacement = true
+            return
+        }
+        placementImage = PDFToolsEngine.shared.pageImageSync(url, maxWidth: 1600)
+        // Line tools need the glyph geometry of the page. It is extracted once,
+        // here, so that dragging on the canvas is pure arithmetic and never
+        // calls PDFKit on the gesture path.
+        if kind.followsTextLines {
+            let started = CFAbsoluteTimeGetCurrent()
+            placementTextMap = PageTextMap.make(from: url, pageIndex: 0)
+            let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+            let lines = placementTextMap?.lines.count ?? 0
+            RuntimeDiagnostics.shared.log("PDF", String(format: "text map: %d lines in %.1f ms", lines, elapsed))
+        } else {
+            placementTextMap = nil
         }
         showPlacement = true
     }
@@ -96,12 +110,15 @@ extension PDFToolsModel {
     }
 
     /// The cover keeps drawing its content while it animates out, so the
-    /// rendered page is released only after dismissal; reopening the tool in
-    /// the meantime keeps the newer render.
+    /// rendered page and the text map are released only after dismissal;
+    /// reopening the tool in the meantime keeps the newer render.
     private func releasePlacementImageSoon() {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1))
-            if !showPlacement { placementImage = nil }
+            if !showPlacement {
+                placementImage = nil
+                placementTextMap = nil
+            }
         }
     }
 

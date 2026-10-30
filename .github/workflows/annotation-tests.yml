@@ -1,0 +1,57 @@
+name: Annotation tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          set -euo pipefail
+          LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "selected: $LATEST"
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
+
+      - name: Text-map tests (D1–D4 geometry)
+        run: |
+          set -euo pipefail
+          swiftc -O \
+            PDFMaster/Modules/PDFModule/Engine/PageTextMap.swift \
+            scripts/PageTextMapTests/main.swift \
+            -o "$RUNNER_TEMP/pagetext-tests"
+          "$RUNNER_TEMP/pagetext-tests" 2>&1 | tee tests.log
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build for simulator
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project PDFMaster.xcodeproj \
+            -scheme PDFMaster \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee build.log
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: annotation-tests
+          path: |
+            tests.log
+            build.log
+          if-no-files-found: ignore

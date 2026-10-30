@@ -10,6 +10,8 @@ import UIKit
 struct AnnotationPlacementView: View {
     let image: UIImage?
     let kind: PDFAnnotationKind
+    /// Glyph geometry of the page, used by the row-accurate line tools.
+    let textMap: PageTextMap?
     let onApply: (CGRect) -> Void
     let onCancel: () -> Void
 
@@ -47,7 +49,7 @@ struct AnnotationPlacementView: View {
 
     @ViewBuilder private var page: some View {
         if let image {
-            AnnotationCanvas(image: image, kind: kind, selection: $selection)
+            AnnotationCanvas(image: image, kind: kind, textMap: textMap, selection: $selection)
                 .ignoresSafeArea(edges: .bottom)
         } else {
             Text(PDFL10n.t("Немає сторінки для анотації"))
@@ -77,10 +79,11 @@ struct AnnotationPlacementView: View {
 private struct AnnotationCanvas: UIViewRepresentable {
     let image: UIImage
     let kind: PDFAnnotationKind
+    let textMap: PageTextMap?
     @Binding var selection: CGRect?
 
     func makeUIView(context: Context) -> AnnotationCanvasView {
-        let view = AnnotationCanvasView(image: image, kind: kind)
+        let view = AnnotationCanvasView(image: image, kind: kind, textMap: textMap)
         let coordinator = context.coordinator
         view.onSelection = { rect in coordinator.parent.selection = rect }
         return view
