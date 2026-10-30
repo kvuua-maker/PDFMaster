@@ -150,6 +150,9 @@ private extension PDFAnnotationKind {
     }
 
     var hint: String {
+        if followsTextLines, textMap?.isEmpty != false {
+            return PDFL10n.t("У цьому PDF немає текстового шару — лінія йде за пальцем. Розпізнайте текст (OCR), щоб прив'язувати лінії до рядків.")
+        }
         switch self {
         case .underline, .strikeOut:
             PDFL10n.t("Проведіть пальцем уздовж слова — лінія буде такої довжини. Двома пальцями: масштаб і прокрутка.")

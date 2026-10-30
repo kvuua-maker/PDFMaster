@@ -32,6 +32,10 @@ final class AnnotationCanvasView: UIView {
     private let zoomDelegate = CanvasZoomDelegate()
     private let drawGesture = UIPanGestureRecognizer()
     private let wordTap = UITapGestureRecognizer()
+    private let gestureDelegate = CanvasGestureDelegate()
+    /// Exact touch-down point, delivered by `shouldReceive` before the pan is
+    /// recognised.
+    private var pendingTouchDown: CGPoint?
     private let startHandle = SelectionHandleView(isStart: true)
     private let endHandle = SelectionHandleView(isStart: false)
     private let actionBar = SelectionActionBar()
@@ -122,6 +126,8 @@ final class AnnotationCanvasView: UIView {
 
         drawGesture.addTarget(self, action: #selector(handleDraw(_:)))
         drawGesture.maximumNumberOfTouches = 1
+        drawGesture.delegate = gestureDelegate
+        gestureDelegate.canvas = self
         content.addGestureRecognizer(drawGesture)
 
         wordTap.addTarget(self, action: #selector(handleWordTap(_:)))
@@ -134,6 +140,10 @@ final class AnnotationCanvasView: UIView {
         endHandle.setColor(kind.color)
         startHandle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handleStartPanned(_:))))
         endHandle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handleEndPanned(_:))))
+        startHandle.isUserInteractionEnabled = true
+        endHandle.isUserInteractionEnabled = true
+        startHandle.layer.zPosition = 100
+        endHandle.layer.zPosition = 100
         addSubview(startHandle)
         addSubview(endHandle)
 
@@ -324,6 +334,7 @@ final class AnnotationCanvasView: UIView {
             dragHandle = nil
             anchorRow = nil
             renderThrottled(force: true)
+            logSelectionGeometry()
             showHandles()
             showActionBar()
         case .cancelled, .failed:
@@ -347,9 +358,20 @@ final class AnnotationCanvasView: UIView {
     /// recovers the real start — this was the offset at the start of a
     /// selection.
     private func touchDownPoint(_ gesture: UIPanGestureRecognizer) -> CGPoint {
+        if let pending = pendingTouchDown {
+            pendingTouchDown = nil
+            return clampToContent(pending)
+        }
         let location = gesture.location(in: content)
         let translation = gesture.translation(in: content)
         return CGPoint(x: location.x - translation.x, y: location.y - translation.y)
+    }
+
+    /// Called by the gesture delegate for the very first touch of a draw, i.e.
+    /// before the pan is recognised, so the anchor is the real touch-down.
+    func recordTouchDown(_ point: CGPoint, from gesture: UIGestureRecognizer) {
+        guard gesture === drawGesture else { return }
+        pendingTouchDown = point
     }
 
     private func logTouch(_ gesture: UIPanGestureRecognizer, touchDown: CGPoint) {
@@ -510,11 +532,59 @@ final class AnnotationCanvasView: UIView {
     private func showHandles() {
         guard usesLineSnapping, contentSelectionRect() != nil else {
             hideHandles()
+            logFallbackReason()
             return
         }
         startHandle.isHidden = false
         endHandle.isHidden = false
+        bringSubviewToFront(startHandle)
+        bringSubviewToFront(endHandle)
         updateHandlePositions()
+        RuntimeDiagnostics.shared.log(
+            "annotation",
+            String(format: "handles hidden=%d start=(%.1f,%.1f) end=(%.1f,%.1f) interaction=%d inWindow=%d",
+                   startHandle.isHidden ? 1 : 0,
+                   startHandle.center.x, startHandle.center.y,
+                   endHandle.center.x, endHandle.center.y,
+                   startHandle.isUserInteractionEnabled ? 1 : 0,
+                   startHandle.window != nil ? 1 : 0)
+        )
+    }
+
+    private func logSelectionGeometry() {
+        guard let textMap, let selection = lineSelection,
+              textMap.lines.indices.contains(selection.line) else { return }
+        let chars = textMap.lines[selection.line].chars
+        guard let first = chars.first, let last = chars.last, !chars.isEmpty else { return }
+        let startX = chars[min(selection.lower, chars.count - 1)].minX
+        let endX = chars[min(selection.upper, chars.count - 1)].maxX
+        RuntimeDiagnostics.shared.log(
+            "annotation",
+            String(format: "selection chars=%d…%d startX=%.2f endX=%.2f firstGlyphMinX=%.2f lastGlyphMaxX=%.2f lineHeight=%.2f",
+                   selection.start, selection.end, startX, endX,
+                   first.minX, last.maxX, textMap.lines[selection.line].lineHeight)
+        )
+    }
+
+    /// Explains in the log why the row tools fell back to a free rectangle.
+    private func logFallbackReason() {
+        guard let textMap else {
+            RuntimeDiagnostics.shared.log("annotation", "line mode off: no text map (no text layer on page 1)")
+            return
+        }
+        if textMap.isEmpty {
+            RuntimeDiagnostics.shared.log("annotation", "line mode off: text map has no rows")
+            return
+        }
+        let imageRatio = pageImage.size.width / max(pageImage.size.height, 1)
+        let pageRatio = textMap.pageSize.width / max(textMap.pageSize.height, 1)
+        RuntimeDiagnostics.shared.log(
+            "annotation",
+            String(format: "line mode off: image=%.1fx%.1f page=%.1fx%.1f ratioDelta=%.4f",
+                   pageImage.size.width, pageImage.size.height,
+                   textMap.pageSize.width, textMap.pageSize.height,
+                   abs(imageRatio - pageRatio))
+        )
     }
 
     private func hideHandles() {
@@ -583,7 +653,7 @@ final class AnnotationCanvasView: UIView {
     }
 
     private func commitActiveSelection() {
-        guard let rect = normalisedSelection else { return }
+        guard let rect = annotationNormalisedRect else { return }
         let item = PlacedAnnotation(kind: kind, rect: rect)
         annotations.append(item)
         drawCommitted()
@@ -604,6 +674,27 @@ final class AnnotationCanvasView: UIView {
     }
 
     // MARK: - Rendering
+
+    /// What is written into the PDF. Row tools get their own rectangle per
+    /// tool (line under the text, line through the text, box around the row);
+    /// other tools write the drawn rectangle.
+    private var annotationNormalisedRect: CGRect? {
+        if usesLineSnapping, let textMap, let lineSelection,
+           let style = lineStyle,
+           let pageRect = textMap.annotationRect(for: lineSelection, style: style) {
+            return textMap.normalised(pageRect)
+        }
+        return normalisedSelection
+    }
+
+    private var lineStyle: PageTextMap.LineStyle? {
+        switch kind {
+        case .underline: return .underline
+        case .strikeOut: return .strikeThrough
+        case .circle: return .circle
+        default: return nil
+        }
+    }
 
     private var normalisedSelection: CGRect? {
         if usesLineSnapping, let textMap, let lineSelection,
@@ -654,8 +745,11 @@ final class AnnotationCanvasView: UIView {
         guard size.width > 1, size.height > 1 else { return .zero }
         if kind == .underline || kind == .strikeOut {
             let length = max(abs(end.x - start.x), size.width * 0.02)
-            let band = max(size.height * 0.022, 4)
-            let lineY = kind == .underline ? start.y - band : start.y - band / 2
+            // A thin band at the finger: PDFKit paints an underline along the
+            // bottom of the band and a strike-through through its middle, so
+            // both land at the finger instead of one row above it.
+            let band = max(size.height * 0.012, 3)
+            let lineY = kind == .underline ? start.y : start.y - band / 2
             let originX = min(max(min(start.x, end.x), 0), max(size.width - length, 0))
             let originY = min(max(lineY, 0), max(size.height - band, 0))
             let rect = CGRect(x: originX, y: originY,
@@ -687,6 +781,20 @@ extension PDFAnnotationKind {
         case .underline, .strikeOut, .circle: return true
         default: return false
         }
+    }
+}
+
+/// Delivers the touch-down point before the pan is recognised, and keeps the
+/// conformance outside the main-actor-isolated view.
+private final class CanvasGestureDelegate: NSObject, UIGestureRecognizerDelegate {
+    weak var canvas: AnnotationCanvasView?
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        guard let canvas else { return true }
+        let location = touch.location(in: canvas.content)
+        MainActor.assumeIsolated { canvas.recordTouchDown(location, from: gestureRecognizer) }
+        return true
     }
 }
 

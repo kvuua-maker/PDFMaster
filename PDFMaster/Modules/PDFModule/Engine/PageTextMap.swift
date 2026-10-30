@@ -257,9 +257,15 @@ struct PageTextMap {
     /// extent follows the finger.
     func selection(onLine line: Int, fromX: CGFloat, toX: CGFloat) -> PageLineSelection? {
         guard lines.indices.contains(line) else { return nil }
-        return PageLineSelection(line: line,
-                                 start: charIndex(inLine: line, atX: fromX),
-                                 end: charIndex(inLine: line, atX: toX))
+        let chars = lines[line].chars
+        guard let first = chars.first, let last = chars.last else { return nil }
+        // A touch at or beyond the row's edges selects the row's edge
+        // character. Without this the left edge of the first glyph was
+        // reachable only by luck, which read as "the selection starts to the
+        // right of where I put my finger".
+        let start = fromX <= first.minX ? 0 : charIndex(inLine: line, atX: fromX)
+        let end = toX >= last.maxX ? chars.count - 1 : charIndex(inLine: line, atX: toX)
+        return PageLineSelection(line: line, start: start, end: end)
     }
 
     /// Moves a selection by whole rows (the ↑/↓ buttons). Returns nil at the
@@ -293,6 +299,50 @@ struct PageTextMap {
         let maxX = chars[upper].maxX
         let top = line.baselineY - line.lineHeight * 0.8
         return CGRect(x: minX, y: top, width: max(maxX - minX, 1), height: line.lineHeight)
+    }
+
+    /// How the app paints a row annotation. The position of the drawn line is
+    /// decided here, per tool, instead of relying on how PDFKit happens to
+    /// place an underline or a strike-through inside a tall rectangle.
+    enum LineStyle {
+        case underline
+        case strikeThrough
+        case circle
+    }
+
+    /// Rectangle handed to the PDF engine for a row selection.
+    ///
+    /// * underline — a thin band starting just below the baseline, so the line
+    ///   PDFKit draws under it sits under the text;
+    /// * strike-through — a thin band centred on `baseline − 0.3 × lineHeight`,
+    ///   so the line crosses the glyphs;
+    /// * circle — the row box grown by a small padding, so the ring surrounds
+    ///   the whole row without touching the neighbours.
+    func annotationRect(for selection: PageLineSelection, style: LineStyle) -> CGRect? {
+        guard lines.indices.contains(selection.line),
+              let box = rect(for: selection) else { return nil }
+        let line = lines[selection.line]
+        let baseline = line.baselineY
+        let height = line.lineHeight
+        let thickness = max(height * 0.08, 1.5)
+        let width = max(box.width, 1)
+        switch style {
+        case .underline:
+            // The band starts 1.5 pt under the baseline; PDFKit paints the
+            // underline along the bottom of the band.
+            let top = baseline + max(1.5, height * 0.09)
+            return CGRect(x: box.minX, y: top, width: width, height: thickness)
+        case .strikeThrough:
+            let centre = baseline - height * 0.3
+            return CGRect(x: box.minX, y: centre - thickness / 2,
+                          width: width, height: thickness)
+        case .circle:
+            let padding: CGFloat = max(height * 0.15, 2.5)
+            let top = baseline - height * 0.8 - padding
+            return CGRect(x: box.minX - padding, y: top,
+                          width: width + padding * 2,
+                          height: height + padding * 2)
+        }
     }
 
     /// Page points → 0…1 with a top-left origin (what the PDF engine takes).

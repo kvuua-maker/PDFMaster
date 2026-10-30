@@ -92,6 +92,62 @@ check(abs(box1.height - row1.lineHeight) < 0.01,
 check(!box0.intersects(box1) && !box1.intersects(box2),
       "line boxes of neighbouring rows never overlap")
 
+// MARK: - Each tool paints its line where the tool belongs
+
+let fullRow = PageLineSelection(line: 1, start: 0, end: row1.chars.count - 1)
+
+if let underline = map.annotationRect(for: fullRow, style: .underline) {
+    check(underline.minY > row1.baselineY, "underline starts below the baseline",
+          String(format: "top %.2f vs baseline %.2f", underline.minY, row1.baselineY))
+    check(underline.height <= row1.lineHeight * 0.2, "underline is a thin line",
+          String(format: "%.2f pt", underline.height))
+    check(!underline.intersects(row0.rect) && !underline.intersects(row2.rect),
+          "underline does not touch the neighbouring rows")
+}
+
+if let strike = map.annotationRect(for: fullRow, style: .strikeThrough) {
+    let expected = row1.baselineY - row1.lineHeight * 0.3
+    check(abs(strike.midY - expected) < 0.01, "strike-through is centred on baseline − 0.3 × lineHeight",
+          String(format: "%.2f vs %.2f", strike.midY, expected))
+    check(strike.midY > row1.rect.minY && strike.midY < row1.rect.maxY,
+          "strike-through crosses the glyphs",
+          String(format: "y %.2f in %.2f…%.2f", strike.midY, row1.rect.minY, row1.rect.maxY))
+    check(!strike.intersects(row0.rect) && !strike.intersects(row2.rect),
+          "strike-through does not touch the neighbouring rows")
+}
+
+if let circle = map.annotationRect(for: fullRow, style: .circle) {
+    check(circle.contains(row1.rect), "circle surrounds the whole row",
+          String(format: "%.1fx%.1f vs row %.1fx%.1f", circle.width, circle.height, row1.rect.width, row1.rect.height))
+    check(circle.width > row1.rect.width + 4 && circle.height > row1.rect.height + 4,
+          "circle has a visible padding")
+    check(!circle.intersects(row0.rect) && !circle.intersects(row2.rect),
+          "circle does not touch the neighbouring rows")
+}
+
+// The three tools must produce three different rectangles for the same row.
+let underlineY = map.annotationRect(for: fullRow, style: .underline)?.midY ?? 0
+let strikeY = map.annotationRect(for: fullRow, style: .strikeThrough)?.midY ?? 0
+let circleY = map.annotationRect(for: fullRow, style: .circle)?.midY ?? 0
+check(underlineY > strikeY && strikeY > circleY,
+      "each tool places its line at its own Y", String(format: "%.1f > %.1f > %.1f", underlineY, strikeY, circleY))
+
+// MARK: - Row edges snap to the first / last character
+
+if let fromLeft = map.selection(onLine: 1, fromX: row1.rect.minX - 30, toX: row1.rect.minX + 40) {
+    check(fromLeft.start == 0, "a touch left of the row starts at the first character",
+          "chars \(fromLeft.start)…\(fromLeft.end)")
+    if let rect = map.rect(for: fromLeft) {
+        check(abs(rect.minX - row1.chars[0].minX) < 0.01,
+              "the selection starts exactly at the first glyph",
+              String(format: "%.2f vs %.2f", rect.minX, row1.chars[0].minX))
+    }
+}
+if let toRight = map.selection(onLine: 1, fromX: row1.rect.midX, toX: row1.rect.maxX + 30) {
+    check(toRight.end == row1.chars.count - 1, "a touch right of the row ends at the last character",
+          "chars \(toRight.end) of \(row1.chars.count - 1)")
+}
+
 // MARK: - Case 1: a tap starts at the character under the finger, at any zoom
 
 let contentSize = CGSize(width: map.pageSize.width * 2, height: map.pageSize.height * 2)
