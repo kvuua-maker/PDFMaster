@@ -242,9 +242,27 @@ while y <= row2.rect.maxY + 20 {
             let otherBox = map.rect(for: PageLineSelection(line: otherIndex, start: 0, end: other.chars.count - 1))!
             if otherBox.intersects(box) { sweepOK = false }
         }
-        if y >= row0.rect.minY && y <= row2.rect.maxY, map.nearestLineIndex(atY: y) != index {
-            sweepOK = false
+        // The chosen row must be the reachable row with the nearest baseline.
+        var expected: Int?
+        var expectedDistance = CGFloat.greatestFiniteMagnitude
+        for (otherIndex, other) in map.lines.enumerated() {
+            let band = other.band
+            let outside: CGFloat
+            if y < band.minY {
+                outside = band.minY - y
+            } else if y > band.maxY {
+                outside = y - band.maxY
+            } else {
+                outside = 0
+            }
+            guard outside <= PageTextMap.tolerance(lineHeight: other.lineHeight) else { continue }
+            let distance = abs(y - other.baselineY)
+            if distance < expectedDistance {
+                expectedDistance = distance
+                expected = otherIndex
+            }
         }
+        if let expected, expected != index { sweepOK = false }
     }
     y += 1
 }
