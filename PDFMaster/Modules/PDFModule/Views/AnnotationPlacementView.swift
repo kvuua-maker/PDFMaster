@@ -90,9 +90,18 @@ struct AnnotationPlacementView: View {
         .background(.ultraThinMaterial)
     }
 
+    /// Row tools need a text layer; say so instead of quietly drawing a free
+    /// rectangle when the page has none.
+    private var hintText: String {
+        if kind.followsTextLines, textMap?.isEmpty != false {
+            return PDFL10n.t("У цьому PDF немає текстового шару — лінія йде за пальцем. Розпізнайте текст (OCR), щоб прив'язувати лінії до рядків.")
+        }
+        return kind.hint
+    }
+
     @ViewBuilder private var hint: some View {
         if showHint {
-            Text(kind.hint)
+            Text(hintText)
                 .font(.caption2)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 12)
@@ -150,9 +159,6 @@ private extension PDFAnnotationKind {
     }
 
     var hint: String {
-        if followsTextLines, textMap?.isEmpty != false {
-            return PDFL10n.t("У цьому PDF немає текстового шару — лінія йде за пальцем. Розпізнайте текст (OCR), щоб прив'язувати лінії до рядків.")
-        }
         switch self {
         case .underline, .strikeOut:
             PDFL10n.t("Проведіть пальцем уздовж слова — лінія буде такої довжини. Двома пальцями: масштаб і прокрутка.")
