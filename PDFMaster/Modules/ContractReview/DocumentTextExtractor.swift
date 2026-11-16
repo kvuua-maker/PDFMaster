@@ -32,7 +32,8 @@ enum DocumentTextExtractor {
             guard let page = document.page(at: index) else { continue }
             let media = page.bounds(for: .mediaBox)
             if let selection = page.selection(for: media),
-               let lineSelections = selection.selectionsByLine(), !lineSelections.isEmpty {
+               !selection.selectionsByLine().isEmpty {
+                let lineSelections = selection.selectionsByLine()
                 var lines: [OCRLine] = []
                 for selection in lineSelections {
                     guard let text = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines),
