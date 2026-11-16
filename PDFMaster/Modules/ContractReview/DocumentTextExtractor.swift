@@ -4,26 +4,59 @@ import UIKit
 import Vision
 
 enum ExtractionError: LocalizedError {
+    case accessDenied
     case unreadable
     case empty
 
     var errorDescription: String? {
         switch self {
+        case .accessDenied: return "Немає доступу до файлу. Виберіть його ще раз через «Обрати договір»"
         case .unreadable: return "Не вдалося відкрити файл"
-        case .empty: return "У документі не знайдено тексту"
+        case .empty: return "У документі не знайдено тексту — можливо, скан надто темний або порожній"
         }
     }
 }
 
 /// Turns a contract into lines with boxes.
 ///
-/// PDF text layers are read with PDFKit; pages without a text layer (scans,
-/// photos) and picked images go through Vision, which is the same OCR the rest
-/// of the app already uses. PDFKit stays on the main actor; Vision runs on a
-/// detached task over image data, so nothing non-Sendable crosses threads.
+/// The file from the system picker lives outside the sandbox, so it is copied
+/// into the app's temporary folder under a security scope first — without that
+/// every read fails. PDFs are read through PDFKit's line selections; images and
+/// scanned pages go through Vision on a background task, because nothing
+/// non-Sendable may cross an actor boundary.
 enum DocumentTextExtractor {
-    @MainActor
+    /// Copies a picker URL into the sandbox; the caller owns the returned file.
+    static func localCopy(of url: URL) throws -> URL {
+        try copyToTemporary(url)
+    }
+
     static func extract(from url: URL) async throws -> Extraction {
+        let local = try copyToTemporary(url)
+        defer { try? FileManager.default.removeItem(at: local) }
+        return try await extract(fromLocal: local)
+    }
+
+    static func extract(fromLocal url: URL) async throws -> Extraction {
+        if url.pathExtension.lowercased() == "pdf" {
+            return try await extractPDF(url)
+        }
+        let data = try Data(contentsOf: url)
+        return try await extract(imageData: data)
+    }
+
+    static func extract(imageData: Data) async throws -> Extraction {
+        let recognized = await recognize(data: imageData)
+        guard !recognized.lines.isEmpty else { throw ExtractionError.empty }
+        let page = OCRPage(index: 0,
+                           width: Double(recognized.width),
+                           height: Double(recognized.height),
+                           lines: recognized.lines,
+                           confidence: recognized.confidence)
+        return Extraction(pages: [page], engine: .vision)
+    }
+
+    @MainActor
+    private static func extractPDF(_ url: URL) async throws -> Extraction {
         guard let document = PDFDocument(url: url) else { throw ExtractionError.unreadable }
         var pages: [OCRPage] = []
         var pending: [(index: Int, width: Double, height: Double, data: Data)] = []
@@ -66,18 +99,22 @@ enum DocumentTextExtractor {
         }
         pages.sort { $0.index < $1.index }
         guard pages.contains(where: { !$0.lines.isEmpty }) else { throw ExtractionError.empty }
-        return Extraction(pages: pages)
+        return Extraction(pages: pages, engine: pending.isEmpty ? .pdf : .vision)
     }
 
-    static func extract(imageData: Data) async throws -> Extraction {
-        let recognized = await recognize(data: imageData)
-        guard !recognized.lines.isEmpty else { throw ExtractionError.empty }
-        let page = OCRPage(index: 0,
-                           width: Double(recognized.width),
-                           height: Double(recognized.height),
-                           lines: recognized.lines,
-                           confidence: recognized.confidence)
-        return Extraction(pages: [page])
+    private static func copyToTemporary(_ url: URL) throws -> URL {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let ext = url.pathExtension.isEmpty ? "dat" : url.pathExtension
+        let target = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + "." + ext)
+        try? FileManager.default.removeItem(at: target)
+        do {
+            try FileManager.default.copyItem(at: url, to: target)
+        } catch {
+            throw ExtractionError.accessDenied
+        }
+        return target
     }
 
     private static func recognize(data: Data) async
@@ -86,33 +123,53 @@ enum DocumentTextExtractor {
             guard let image = UIImage(data: data), let cgImage = image.cgImage else {
                 return ([], 0.0, 0, 0)
             }
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.recognitionLanguages = ["uk-UA", "ru-RU", "en-US"]
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                return ([], 0.0, 0, 0)
+            if let result = run(cgImage: cgImage, languages: nil), !result.lines.isEmpty {
+                return (result.lines, result.confidence, cgImage.width, cgImage.height)
             }
-            let observations = request.results ?? []
-            var lines: [OCRLine] = []
-            var scores: [Double] = []
-            for observation in observations {
-                guard let candidate = observation.topCandidates(1).first else { continue }
-                let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                let box = observation.boundingBox
-                lines.append(OCRLine(text: text,
-                                     x: Double(box.minX),
-                                     y: Double(1 - box.maxY),
-                                     width: Double(box.width),
-                                     height: Double(box.height)))
-                scores.append(Double(candidate.confidence) * 100)
+            // Some devices do not have the Ukrainian model; English still reads
+            // Latin text and numbers, and the model can work with that.
+            if let result = run(cgImage: cgImage, languages: ["en-US"]), !result.lines.isEmpty {
+                return (result.lines, result.confidence * 0.9, cgImage.width, cgImage.height)
             }
-            let confidence = scores.isEmpty ? 0 : scores.reduce(0, +) / Double(scores.count)
-            return (lines, confidence, cgImage.width, cgImage.height)
+            return ([], 0.0, cgImage.width, cgImage.height)
         }.value
+    }
+
+    private nonisolated static func run(cgImage: CGImage, languages: [String]?)
+        -> (lines: [OCRLine], confidence: Double)? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        if let languages {
+            request.recognitionLanguages = languages
+        } else {
+            let preferred = ["uk-UA", "ru-RU", "en-US"]
+            let supported = (try? VNRecognizeTextRequest.supportedRecognitionLanguages(
+                for: .accurate, revision: request.revision)) ?? []
+            let available = preferred.filter { supported.contains($0) }
+            request.recognitionLanguages = available.isEmpty ? ["en-US"] : available
+        }
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return nil
+        }
+        var lines: [OCRLine] = []
+        var scores: [Double] = []
+        for observation in request.results ?? [] {
+            guard let candidate = observation.topCandidates(1).first else { continue }
+            let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let box = observation.boundingBox
+            lines.append(OCRLine(text: text,
+                                 x: Double(box.minX),
+                                 y: Double(1 - box.maxY),
+                                 width: Double(box.width),
+                                 height: Double(box.height)))
+            scores.append(Double(candidate.confidence) * 100)
+        }
+        let confidence = scores.isEmpty ? 0 : scores.reduce(0, +) / Double(scores.count)
+        return (lines, confidence)
     }
 }

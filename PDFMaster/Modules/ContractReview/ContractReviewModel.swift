@@ -28,10 +28,14 @@ final class ContractReviewModel {
         Task {
             phase = .working("Розпізнаємо текст…")
             do {
-                let extraction = try await DocumentTextExtractor.extract(from: url)
+                // One local copy is used for reading and for keeping the source:
+                // the picker URL stops being valid as soon as this call returns.
+                let local = try DocumentTextExtractor.localCopy(of: url)
+                defer { try? FileManager.default.removeItem(at: local) }
+                let extraction = try await DocumentTextExtractor.extract(fromLocal: local)
                 phase = .working("Аналізуємо умови…")
                 let response = try await client.analyse(extraction)
-                let record = store.add(name: url.lastPathComponent, response: response, copying: url)
+                let record = store.add(name: url.lastPathComponent, response: response, copying: local)
                 phase = .idle
                 presented = RecordPresentation(id: record.id)
             } catch {

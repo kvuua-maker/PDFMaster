@@ -19,8 +19,14 @@ struct OCRPage: Sendable {
     let confidence: Double
 }
 
+enum OCREngine: String, Sendable {
+    case pdf
+    case vision
+}
+
 struct Extraction: Sendable {
     let pages: [OCRPage]
+    let engine: OCREngine
 
     var confidence: Double {
         guard !pages.isEmpty else { return 0 }
@@ -33,7 +39,10 @@ struct Extraction: Sendable {
 // MARK: - Request
 
 struct ReviewPayload: Encodable {
-    struct Meta: Encodable { let confidence: Double }
+    struct Meta: Encodable {
+        let confidence: Double
+        let engine: String
+    }
     struct Line: Encodable {
         let text: String
         let x: Double
@@ -54,7 +63,8 @@ struct ReviewPayload: Encodable {
     let pages: [Page]
 
     init(extraction: Extraction) {
-        meta = Meta(confidence: extraction.confidence)
+        meta = Meta(confidence: extraction.confidence,
+                    engine: extraction.engine.rawValue)
         pages = extraction.pages.map { page in
             Page(index: page.index, width: page.width, height: page.height,
                  lines: page.lines.map {
