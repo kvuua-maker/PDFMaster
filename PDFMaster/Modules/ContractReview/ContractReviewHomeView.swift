@@ -34,9 +34,7 @@ struct ContractReviewHomeView: View {
                 }
             }
             .sheet(item: $model.presented) { item in
-                ReviewResultView(name: item.name, response: item.response) {
-                    model.reset()
-                }
+                ReviewResultView(recordID: item.id) { model.reset() }
             }
             .sheet(isPresented: $showTools) { PDFToolsView() }
             .fileImporter(isPresented: $showImporter,
@@ -124,16 +122,16 @@ struct ContractReviewHomeView: View {
     }
 
     @ViewBuilder private var recent: some View {
-        if !model.history.isEmpty {
+        if !model.records.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Останні перевірки")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(MidnightGold.secondaryText)
-                ForEach(model.history) { record in
+                ForEach(model.records) { record in
                     Button { model.open(record) } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: icon(for: record.response))
-                                .foregroundStyle(color(for: record.response))
+                            Image(systemName: icon(for: record))
+                                .foregroundStyle(color(for: record))
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(record.name).font(.subheadline).lineLimit(1)
                                     .foregroundStyle(.white)
@@ -161,19 +159,19 @@ struct ContractReviewHomeView: View {
             .padding(.top, 8)
     }
 
-    private func icon(for response: ReviewResponse) -> String {
-        switch response.status {
+    private func icon(for record: StoredRecord) -> String {
+        switch record.response.status {
         case "blank": return "doc"
         case "unreadable": return "exclamationmark.triangle"
         default: return "checkmark.shield"
         }
     }
 
-    private func color(for response: ReviewResponse) -> Color {
-        switch response.status {
+    private func color(for record: StoredRecord) -> Color {
+        switch record.response.status {
         case "blank", "unreadable": return .orange
         default:
-            switch response.riskLevel {
+            switch record.response.riskLevel {
             case "high": return .red
             case "medium": return .orange
             default: return .green

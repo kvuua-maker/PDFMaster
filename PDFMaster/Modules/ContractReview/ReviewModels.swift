@@ -66,7 +66,7 @@ struct ReviewPayload: Encodable {
 
 // MARK: - Response
 
-struct ReviewAnchor: Decodable {
+struct ReviewAnchor: Codable {
     let page: Int
     let x: Double
     let y: Double
@@ -75,7 +75,7 @@ struct ReviewAnchor: Decodable {
     let score: Double?
 }
 
-struct ReviewFinding: Decodable, Identifiable {
+struct ReviewFinding: Codable, Identifiable {
     let id: String
     let category: String?
     let severity: String
@@ -91,13 +91,13 @@ struct ReviewFinding: Decodable, Identifiable {
     }
 }
 
-struct ReviewMissing: Decodable, Identifiable {
+struct ReviewMissing: Codable, Identifiable {
     let id: String
     let title: String
     let explanation: String?
 }
 
-struct ReviewStats: Decodable {
+struct ReviewStats: Codable {
     let pages: Int?
     let findings: Int?
     let anchored: Int?
@@ -106,7 +106,7 @@ struct ReviewStats: Decodable {
     let ms: Int?
 }
 
-struct ReviewResponse: Decodable {
+struct ReviewResponse: Codable {
     let status: String
     let message: String?
     let riskLevel: String?
