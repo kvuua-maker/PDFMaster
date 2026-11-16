@@ -4,7 +4,7 @@ import SwiftUI
 struct PDFMasterApp: App {
     var body: some Scene {
         WindowGroup {
-            PDFHomeView()
+            ContractReviewHomeView()
                 .preferredColorScheme(.dark)
                 .tint(MidnightGold.gold)
         }

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>uk</string>
 	<key>CFBundleDisplayName</key>
-	<string>PDF Master</string>
+	<string>Contract Review</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -36,6 +36,8 @@
 	<string>Доступ до фото потрібен, щоб створювати PDF зі знімків.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Дозвольте зберігати створені PDF у Фото.</string>
+	<key>ReviewToken</key>
+	<string>$(REVIEW_API_TOKEN)</string>
 	<key>UAAPIToken</key>
 	<string>$(UA_API_TOKEN)</string>
 </dict>
